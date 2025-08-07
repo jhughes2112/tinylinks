@@ -34,14 +34,15 @@ type Config struct {
 	EnvFile                 string `mapstructure:"env-file"`
 	LoginTimeout            int    `mapstructure:"login-timeout"`
 	LoginMaxRetries         int    `mapstructure:"login-max-retries"`
-	FogotPasswordMessage    string `mapstructure:"forgot-password-message"`
-	BackgroundImage         string `mapstructure:"background-image" validate:"required"`
-	LdapAddress             string `mapstructure:"ldap-address"`
-	LdapBindDN              string `mapstructure:"ldap-bind-dn"`
-	LdapBindPassword        string `mapstructure:"ldap-bind-password"`
-	LdapBaseDN              string `mapstructure:"ldap-base-dn"`
-	LdapInsecure            bool   `mapstructure:"ldap-insecure"`
-	LdapSearchFilter        string `mapstructure:"ldap-search-filter"`
+	// ForgotPasswordMessage is the message displayed on the forgot password page.
+	ForgotPasswordMessage string `mapstructure:"forgot-password-message"`
+	BackgroundImage       string `mapstructure:"background-image" validate:"required"`
+	LdapAddress           string `mapstructure:"ldap-address"`
+	LdapBindDN            string `mapstructure:"ldap-bind-dn"`
+	LdapBindPassword      string `mapstructure:"ldap-bind-password"`
+	LdapBaseDN            string `mapstructure:"ldap-base-dn"`
+	LdapInsecure          bool   `mapstructure:"ldap-insecure"`
+	LdapSearchFilter      string `mapstructure:"ldap-search-filter"`
 }
 
 // Server configuration

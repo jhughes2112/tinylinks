@@ -91,7 +91,7 @@ var rootCmd = &cobra.Command{
 			GenericName:           config.GenericName,
 			CookieSecure:          config.CookieSecure,
 			Domain:                domain,
-			ForgotPasswordMessage: config.FogotPasswordMessage,
+			ForgotPasswordMessage: config.ForgotPasswordMessage,
 			BackgroundImage:       config.BackgroundImage,
 			OAuthAutoRedirect:     config.OAuthAutoRedirect,
 			CsrfCookieName:        csrfCookieName,
