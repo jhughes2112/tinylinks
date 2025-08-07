@@ -51,7 +51,13 @@ func GetUpperDomain(urlSrc string) (string, error) {
 		return "", err
 	}
 
-	urlSplitted := strings.Split(urlParsed.Hostname(), ".")
+	host := urlParsed.Hostname()
+	urlSplitted := strings.Split(host, ".")
+
+	if len(urlSplitted) <= 2 {
+		return host, nil
+	}
+
 	urlFinal := strings.Join(urlSplitted[1:], ".")
 
 	return urlFinal, nil
