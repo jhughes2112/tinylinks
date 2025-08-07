@@ -50,6 +50,22 @@ func TestGetUpperDomain(t *testing.T) {
 	}
 }
 
+func TestGetUpperDomainNoSubdomain(t *testing.T) {
+	t.Log("Testing get upper domain with no subdomain")
+
+	url := "https://domain.com"
+	expected := "domain.com"
+
+	result, err := utils.GetUpperDomain(url)
+	if err != nil {
+		t.Fatalf("Error getting root url: %v", err)
+	}
+
+	if expected != result {
+		t.Fatalf("Expected %v, got %v", expected, result)
+	}
+}
+
 func TestReadFile(t *testing.T) {
 	t.Log("Creating a test file")
 
