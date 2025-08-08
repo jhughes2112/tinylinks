@@ -147,23 +147,7 @@ func (h *Handlers) OAuthCallbackHandler(c *gin.Context) {
 		return
 	}
 
-	// Email is not whitelisted
-	if !h.Auth.EmailWhitelisted(user.Email) {
-		log.Warn().Str("email", user.Email).Msg("Email not whitelisted")
-		queries, err := query.Values(types.UnauthorizedQuery{
-			Username: user.Email,
-		})
-
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to build queries")
-			c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/error", h.Config.AppURL))
-			return
-		}
-
-		c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/unauthorized?%s", h.Config.AppURL, queries.Encode()))
-	}
-
-	log.Debug().Msg("Email whitelisted")
+	log.Debug().Msg("OAuth user authenticated")
 
 	// Get username
 	var username string
@@ -203,9 +187,9 @@ func (h *Handlers) OAuthCallbackHandler(c *gin.Context) {
 
 	log.Debug().Str("redirectURI", redirectCookie).Msg("Got redirect URI")
 
-	queries, err := query.Values(types.LoginQuery{
-		RedirectURI: redirectCookie,
-	})
+	queries, err := query.Values(struct {
+		RedirectURI string `url:"redirect_uri"`
+	}{RedirectURI: redirectCookie})
 
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to build queries")
