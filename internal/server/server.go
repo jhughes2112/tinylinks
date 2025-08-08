@@ -71,9 +71,14 @@ func NewServer(config types.ServerConfig, handlers *handlers.Handlers) (*Server,
 	router.GET("/api/auth/:proxy", handlers.ProxyHandler)
 
 	// Auth routes
-	router.POST("/api/login", handlers.LoginHandler)
-	router.POST("/api/totp", handlers.TOTPHandler)
 	router.POST("/api/logout", handlers.LogoutHandler)
+
+	// Link routes
+	router.POST("/api/getshortlink", handlers.GetShortLinkHandler)
+	router.POST("/api/useshortlink", handlers.UseShortLinkHandler)
+	router.GET("/api/getlinkedaccounts", handlers.GetLinkedAccountsHandler)
+	router.GET("/api/adminshowlinkedaccounts", handlers.AdminShowLinkedAccountsHandler)
+	router.DELETE("/api/adminunlinkaccounts", handlers.AdminUnlinkAccountsHandler)
 
 	// Context routes
 	router.GET("/api/app", handlers.AppContextHandler)

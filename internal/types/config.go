@@ -7,8 +7,6 @@ type Config struct {
 	Secret                  string `validate:"required,len=32" mapstructure:"secret"`
 	SecretFile              string `mapstructure:"secret-file"`
 	AppURL                  string `validate:"required,url" mapstructure:"app-url"`
-	Users                   string `mapstructure:"users"`
-	UsersFile               string `mapstructure:"users-file"`
 	CookieSecure            bool   `mapstructure:"cookie-secure"`
 	GithubClientId          string `mapstructure:"github-client-id"`
 	GithubClientSecret      string `mapstructure:"github-client-secret"`
@@ -26,38 +24,28 @@ type Config struct {
 	GenericName             string `mapstructure:"generic-name"`
 	GenericSkipSSL          bool   `mapstructure:"generic-skip-ssl"`
 	DisableContinue         bool   `mapstructure:"disable-continue"`
-	OAuthWhitelist          string `mapstructure:"oauth-whitelist"`
 	OAuthAutoRedirect       string `mapstructure:"oauth-auto-redirect" validate:"oneof=none github google generic"`
 	SessionExpiry           int    `mapstructure:"session-expiry"`
 	LogLevel                int8   `mapstructure:"log-level" validate:"min=-1,max=5"`
 	Title                   string `mapstructure:"app-title"`
 	EnvFile                 string `mapstructure:"env-file"`
-	LoginTimeout            int    `mapstructure:"login-timeout"`
-	LoginMaxRetries         int    `mapstructure:"login-max-retries"`
-	// ForgotPasswordMessage is the message displayed on the forgot password page.
-	ForgotPasswordMessage string `mapstructure:"forgot-password-message"`
-	BackgroundImage       string `mapstructure:"background-image" validate:"required"`
-	LdapAddress           string `mapstructure:"ldap-address"`
-	LdapBindDN            string `mapstructure:"ldap-bind-dn"`
-	LdapBindPassword      string `mapstructure:"ldap-bind-password"`
-	LdapBaseDN            string `mapstructure:"ldap-base-dn"`
-	LdapInsecure          bool   `mapstructure:"ldap-insecure"`
-	LdapSearchFilter      string `mapstructure:"ldap-search-filter"`
+	BackgroundImage         string `mapstructure:"background-image" validate:"required"`
+	LinkDBPath              string `mapstructure:"link-db-path"`
+	AdminEmails             string `mapstructure:"admin-emails"`
 }
 
 // Server configuration
 type HandlersConfig struct {
-	AppURL                string
-	Domain                string
-	CookieSecure          bool
-	DisableContinue       bool
-	GenericName           string
-	Title                 string
-	ForgotPasswordMessage string
-	BackgroundImage       string
-	OAuthAutoRedirect     string
-	CsrfCookieName        string
-	RedirectCookieName    string
+	AppURL             string
+	Domain             string
+	CookieSecure       bool
+	DisableContinue    bool
+	GenericName        string
+	Title              string
+	BackgroundImage    string
+	OAuthAutoRedirect  string
+	CsrfCookieName     string
+	RedirectCookieName string
 }
 
 // OAuthConfig is the configuration for the providers
@@ -84,13 +72,9 @@ type ServerConfig struct {
 
 // AuthConfig is the configuration for the auth service
 type AuthConfig struct {
-	Users             Users
-	OauthWhitelist    string
 	SessionExpiry     int
 	CookieSecure      bool
 	Domain            string
-	LoginTimeout      int
-	LoginMaxRetries   int
 	SessionCookieName string
 	HMACSecret        string
 	EncryptionSecret  string
@@ -103,22 +87,10 @@ type HooksConfig struct {
 
 // OAuthLabels is a list of labels that can be used in a tinyauth protected container
 type OAuthLabels struct {
-	Whitelist string
-	Groups    string
+	Groups string
 }
 
 // Basic auth labels for a tinyauth protected container
-type BasicLabels struct {
-	Username string
-	Password PassowrdLabels
-}
-
-// PassowrdLabels is a struct that contains the password labels for a tinyauth protected container
-type PassowrdLabels struct {
-	Plain string
-	File  string
-}
-
 // IP labels for a tinyauth protected container
 type IPLabels struct {
 	Allow  []string
@@ -128,11 +100,9 @@ type IPLabels struct {
 
 // Labels is a struct that contains the labels for a tinyauth protected container
 type Labels struct {
-	Users   string
 	Allowed string
 	Headers []string
 	Domain  []string
-	Basic   BasicLabels
 	OAuth   OAuthLabels
 	IP      IPLabels
 }

@@ -8,8 +8,6 @@ import { App } from "./App.tsx";
 import { ErrorPage } from "./pages/error-page.tsx";
 import { NotFoundPage } from "./pages/not-found-page.tsx";
 import { ContinuePage } from "./pages/continue-page.tsx";
-import { TotpPage } from "./pages/totp-page.tsx";
-import { ForgotPasswordPage } from "./pages/forgot-password-page.tsx";
 import { LogoutPage } from "./pages/logout-page.tsx";
 import { UnauthorizedPage } from "./pages/unauthorized-page.tsx";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -31,11 +29,6 @@ createRoot(document.getElementById("root")!).render(
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/logout" element={<LogoutPage />} />
                 <Route path="/continue" element={<ContinuePage />} />
-                <Route path="/totp" element={<TotpPage />} />
-                <Route
-                  path="/forgot-password"
-                  element={<ForgotPasswordPage />}
-                />
                 <Route path="/unauthorized" element={<UnauthorizedPage />} />
                 <Route path="/error" element={<ErrorPage />} />
                 <Route path="*" element={<NotFoundPage />} />

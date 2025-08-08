@@ -1,5 +1,6 @@
 # dist
-internal/assets/dist
+internal/assets/dist/*
+!internal/assets/dist/index.html
 
 # binaries
 tinyauth

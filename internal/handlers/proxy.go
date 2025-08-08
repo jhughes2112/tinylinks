@@ -72,11 +72,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 			c.Header(key, value)
 		}
 
-		if labels.Basic.Username != "" && utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File) != "" {
-			log.Debug().Str("username", labels.Basic.Username).Msg("Setting basic auth headers")
-			c.Header("Authorization", fmt.Sprintf("Basic %s", utils.GetBasicAuth(labels.Basic.Username, utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File))))
-		}
-
 		c.JSON(200, gin.H{
 			"status":  200,
 			"message": "Authenticated",
@@ -133,11 +128,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 			c.Header(key, value)
 		}
 
-		if labels.Basic.Username != "" && utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File) != "" {
-			log.Debug().Str("username", labels.Basic.Username).Msg("Setting basic auth headers")
-			c.Header("Authorization", fmt.Sprintf("Basic %s", utils.GetBasicAuth(labels.Basic.Username, utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File))))
-		}
-
 		c.JSON(200, gin.H{
 			"status":  200,
 			"message": "Authenticated",
@@ -147,12 +137,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 	}
 
 	userContext := h.Hooks.UseUserContext(c)
-
-	// If we are using basic auth, we need to check if the user has totp and if it does then disable basic auth
-	if userContext.Provider == "basic" && userContext.TotpEnabled {
-		log.Warn().Str("username", userContext.Username).Msg("User has totp enabled, disabling basic auth")
-		userContext.IsLoggedIn = false
-	}
 
 	if userContext.IsLoggedIn {
 		log.Debug().Msg("Authenticated")
@@ -175,12 +159,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 
 			values := types.UnauthorizedQuery{
 				Resource: strings.Split(host, ".")[0],
-			}
-
-			if userContext.OAuth {
-				values.Username = userContext.Email
-			} else {
-				values.Username = userContext.Username
 			}
 
 			queries, err := query.Values(values)
@@ -214,12 +192,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 					GroupErr: true,
 				}
 
-				if userContext.OAuth {
-					values.Username = userContext.Email
-				} else {
-					values.Username = userContext.Username
-				}
-
 				queries, err := query.Values(values)
 				if err != nil {
 					log.Error().Err(err).Msg("Failed to build queries")
@@ -244,11 +216,6 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 			c.Header(key, value)
 		}
 
-		if labels.Basic.Username != "" && utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File) != "" {
-			log.Debug().Str("username", labels.Basic.Username).Msg("Setting basic auth headers")
-			c.Header("Authorization", fmt.Sprintf("Basic %s", utils.GetBasicAuth(labels.Basic.Username, utils.GetSecret(labels.Basic.Password.Plain, labels.Basic.Password.File))))
-		}
-
 		c.JSON(200, gin.H{
 			"status":  200,
 			"message": "Authenticated",
@@ -267,9 +234,9 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 		return
 	}
 
-	queries, err := query.Values(types.LoginQuery{
-		RedirectURI: fmt.Sprintf("%s://%s%s", proto, host, uri),
-	})
+	queries, err := query.Values(struct {
+		RedirectURI string `url:"redirect_uri"`
+	}{RedirectURI: fmt.Sprintf("%s://%s%s", proto, host, uri)})
 
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to build queries")

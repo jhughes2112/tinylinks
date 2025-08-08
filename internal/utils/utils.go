@@ -20,30 +20,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Parses a list of comma separated users in a struct
-func ParseUsers(users string) (types.Users, error) {
-	log.Debug().Msg("Parsing users")
-
-	var usersParsed types.Users
-
-	userList := strings.Split(users, ",")
-
-	if len(userList) == 0 {
-		return types.Users{}, errors.New("invalid user format")
-	}
-
-	for _, user := range userList {
-		parsed, err := ParseUser(user)
-		if err != nil {
-			return types.Users{}, err
-		}
-		usersParsed = append(usersParsed, parsed)
-	}
-
-	log.Debug().Msg("Parsed users")
-	return usersParsed, nil
-}
-
 // Get upper domain parses a hostname and returns the upper domain (e.g. sub1.sub2.domain.com -> sub2.domain.com)
 func GetUpperDomain(urlSrc string) (string, error) {
 	urlParsed, err := url.Parse(urlSrc)
@@ -78,21 +54,6 @@ func ReadFile(file string) (string, error) {
 	return string(data), nil
 }
 
-// Parses a file into a comma separated list of users
-func ParseFileToLine(content string) string {
-	lines := strings.Split(content, "\n")
-	users := make([]string, 0)
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		users = append(users, strings.TrimSpace(line))
-	}
-
-	return strings.Join(users, ",")
-}
-
 // Get the secret from the config or file
 func GetSecret(conf string, file string) string {
 	if conf == "" && file == "" {
@@ -109,33 +70,6 @@ func GetSecret(conf string, file string) string {
 	}
 
 	return ParseSecretFile(contents)
-}
-
-// Get the users from the config or file
-func GetUsers(conf string, file string) (types.Users, error) {
-	var users string
-
-	if conf == "" && file == "" {
-		return types.Users{}, nil
-	}
-
-	if conf != "" {
-		log.Debug().Msg("Using users from config")
-		users += conf
-	}
-
-	if file != "" {
-		contents, err := ReadFile(file)
-		if err == nil {
-			log.Debug().Msg("Using users from file")
-			if users != "" {
-				users += ","
-			}
-			users += ParseFileToLine(contents)
-		}
-	}
-
-	return ParseUsers(users)
 }
 
 // Parse the headers in a map[string]string format
@@ -160,7 +94,7 @@ func ParseHeaders(headers []string) map[string]string {
 func GetLabels(labels map[string]string) (types.Labels, error) {
 	var labelsParsed types.Labels
 
-	err := parser.Decode(labels, &labelsParsed, "tinyauth", "tinyauth.users", "tinyauth.allowed", "tinyauth.headers", "tinyauth.domain", "tinyauth.basic", "tinyauth.oauth", "tinyauth.ip")
+	err := parser.Decode(labels, &labelsParsed, "tinyauth", "tinyauth.allowed", "tinyauth.headers", "tinyauth.domain", "tinyauth.oauth", "tinyauth.ip")
 	if err != nil {
 		log.Error().Err(err).Msg("Error parsing labels")
 		return types.Labels{}, err
@@ -182,38 +116,6 @@ func Filter[T any](slice []T, test func(T) bool) (res []T) {
 		}
 	}
 	return res
-}
-
-// Parse user
-func ParseUser(user string) (types.User, error) {
-	if strings.Contains(user, "$$") {
-		user = strings.ReplaceAll(user, "$$", "$")
-	}
-
-	userSplit := strings.Split(user, ":")
-
-	if len(userSplit) < 2 || len(userSplit) > 3 {
-		return types.User{}, errors.New("invalid user format")
-	}
-
-	for _, userPart := range userSplit {
-		if strings.TrimSpace(userPart) == "" {
-			return types.User{}, errors.New("invalid user format")
-		}
-	}
-
-	if len(userSplit) == 2 {
-		return types.User{
-			Username: strings.TrimSpace(userSplit[0]),
-			Password: strings.TrimSpace(userSplit[1]),
-		}, nil
-	}
-
-	return types.User{
-		Username:   strings.TrimSpace(userSplit[0]),
-		Password:   strings.TrimSpace(userSplit[1]),
-		TotpSecret: strings.TrimSpace(userSplit[2]),
-	}, nil
 }
 
 // Parse secret file
@@ -284,12 +186,6 @@ func GenerateIdentifier(str string) string {
 	uuidString := uuid.String()
 	log.Debug().Str("uuid", uuidString).Msg("Generated UUID")
 	return strings.Split(uuidString, "-")[0]
-}
-
-// Get a basic auth header from a username and password
-func GetBasicAuth(username string, password string) string {
-	auth := username + ":" + password
-	return base64.StdEncoding.EncodeToString([]byte(auth))
 }
 
 // Check if an IP is contained in a CIDR range/matches a single IP
