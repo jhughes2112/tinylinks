@@ -29,7 +29,8 @@ export const LoginPage = () => {
     return <Navigate to="/logout" />;
   }
 
-  const { configuredProviders, title, oauthAutoRedirect, genericName } = useAppContext();
+  const { configuredProviders, title, oauthAutoRedirect, genericName } =
+    useAppContext();
   const { search } = useLocation();
   const { t } = useTranslation();
   const isMounted = useIsMounted();
@@ -67,14 +68,7 @@ export const LoginPage = () => {
   const loginMutation = useMutation({
     mutationFn: (values: LoginSchema) => axios.post("/api/login", values),
     mutationKey: ["login"],
-    onSuccess: (data) => {
-      if (data.data.totpPending) {
-        window.location.replace(
-          `/totp?redirect_uri=${encodeURIComponent(redirectUri ?? "")}`,
-        );
-        return;
-      }
-
+    onSuccess: () => {
       toast.success(t("loginSuccessTitle"), {
         description: t("loginSuccessSubtitle"),
       });
@@ -126,7 +120,10 @@ export const LoginPage = () => {
                 icon={<GoogleIcon />}
                 className="w-full"
                 onClick={() => oauthMutation.mutate("google")}
-                loading={oauthMutation.isPending && oauthMutation.variables === "google"}
+                loading={
+                  oauthMutation.isPending &&
+                  oauthMutation.variables === "google"
+                }
                 disabled={oauthMutation.isPending || loginMutation.isPending}
               />
             )}
@@ -136,7 +133,10 @@ export const LoginPage = () => {
                 icon={<GithubIcon />}
                 className="w-full"
                 onClick={() => oauthMutation.mutate("github")}
-                loading={oauthMutation.isPending && oauthMutation.variables === "github"}
+                loading={
+                  oauthMutation.isPending &&
+                  oauthMutation.variables === "github"
+                }
                 disabled={oauthMutation.isPending || loginMutation.isPending}
               />
             )}
@@ -146,7 +146,10 @@ export const LoginPage = () => {
                 icon={<GenericIcon />}
                 className="w-full"
                 onClick={() => oauthMutation.mutate("generic")}
-                loading={oauthMutation.isPending && oauthMutation.variables === "generic"}
+                loading={
+                  oauthMutation.isPending &&
+                  oauthMutation.variables === "generic"
+                }
                 disabled={oauthMutation.isPending || loginMutation.isPending}
               />
             )}

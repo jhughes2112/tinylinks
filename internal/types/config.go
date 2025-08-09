@@ -106,13 +106,3 @@ type Labels struct {
 	OAuth   OAuthLabels
 	IP      IPLabels
 }
-
-// Ldap config is a struct that contains the configuration for the LDAP service
-type LdapConfig struct {
-	Address      string
-	BindDN       string
-	BindPassword string
-	BaseDN       string
-	Insecure     bool
-	SearchFilter string
-}

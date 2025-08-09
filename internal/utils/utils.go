@@ -13,7 +13,6 @@ import (
 	"strings"
 	"tinyauth/internal/types"
 
-	"github.com/traefik/paerser/parser"
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/google/uuid"
@@ -88,19 +87,6 @@ func ParseHeaders(headers []string) map[string]string {
 	}
 
 	return headerMap
-}
-
-// Get labels parses a map of labels into a struct with only the needed labels
-func GetLabels(labels map[string]string) (types.Labels, error) {
-	var labelsParsed types.Labels
-
-	err := parser.Decode(labels, &labelsParsed, "tinyauth", "tinyauth.allowed", "tinyauth.headers", "tinyauth.domain", "tinyauth.oauth", "tinyauth.ip")
-	if err != nil {
-		log.Error().Err(err).Msg("Error parsing labels")
-		return types.Labels{}, err
-	}
-
-	return labelsParsed, nil
 }
 
 // Check if any of the OAuth providers are configured based on the client id and secret
