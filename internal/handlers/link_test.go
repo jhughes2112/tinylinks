@@ -36,7 +36,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *auth.Auth) {
 	hk := hooks.NewHooks(types.HooksConfig{}, a, prov)
 	db := linkdb.New(t.TempDir())
 
-	h := NewHandlers(types.HandlersConfig{}, a, hk, prov, nil, db, []string{"admin@example.com"})
+	h := NewHandlers(types.HandlersConfig{}, a, hk, prov, db, []string{"admin@example.com"})
 	return h, a
 }
 

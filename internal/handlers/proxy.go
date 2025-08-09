@@ -40,26 +40,7 @@ func (h *Handlers) ProxyHandler(c *gin.Context) {
 	proto := c.Request.Header.Get("X-Forwarded-Proto")
 	host := c.Request.Header.Get("X-Forwarded-Host")
 
-	hostPortless := strings.Split(host, ":")[0] // *lol*
-	id := strings.Split(hostPortless, ".")[0]
-
-	labels, err := h.Docker.GetLabels(id, hostPortless)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get container labels")
-
-		if proxy.Proxy == "nginx" || !isBrowser {
-			c.JSON(500, gin.H{
-				"status":  500,
-				"message": "Internal Server Error",
-			})
-			return
-		}
-
-		c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s/error", h.Config.AppURL))
-		return
-	}
-
-	log.Debug().Interface("labels", labels).Msg("Got labels")
+	labels := types.Labels{}
 
 	ip := c.ClientIP()
 

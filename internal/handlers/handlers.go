@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 	"tinyauth/internal/auth"
-	"tinyauth/internal/docker"
 	"tinyauth/internal/hooks"
 	"tinyauth/internal/linkdb"
 	"tinyauth/internal/providers"
@@ -19,7 +18,6 @@ type Handlers struct {
 	Auth      *auth.Auth
 	Hooks     *hooks.Hooks
 	Providers *providers.Providers
-	Docker    *docker.Docker
 	LinkDB    *linkdb.DB
 	admin     map[string]struct{}
 	codeMu    sync.Mutex
@@ -31,7 +29,7 @@ type codeEntry struct {
 	Expires time.Time
 }
 
-func NewHandlers(config types.HandlersConfig, auth *auth.Auth, hooks *hooks.Hooks, providers *providers.Providers, docker *docker.Docker, db *linkdb.DB, admins []string) *Handlers {
+func NewHandlers(config types.HandlersConfig, auth *auth.Auth, hooks *hooks.Hooks, providers *providers.Providers, db *linkdb.DB, admins []string) *Handlers {
 	adminMap := make(map[string]struct{})
 	for _, e := range admins {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
@@ -43,7 +41,6 @@ func NewHandlers(config types.HandlersConfig, auth *auth.Auth, hooks *hooks.Hook
 		Auth:      auth,
 		Hooks:     hooks,
 		Providers: providers,
-		Docker:    docker,
 		LinkDB:    db,
 		admin:     adminMap,
 		codes:     make(map[string]codeEntry),

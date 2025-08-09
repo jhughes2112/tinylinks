@@ -5,7 +5,6 @@ import (
 	"strings"
 	"tinyauth/internal/auth"
 	"tinyauth/internal/constants"
-	"tinyauth/internal/docker"
 	"tinyauth/internal/handlers"
 	"tinyauth/internal/hooks"
 	"tinyauth/internal/linkdb"
@@ -113,14 +112,12 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Setup the services
-		docker, err := docker.NewDocker()
-		HandleError(err, "Failed to initialize docker")
 		auth := auth.NewAuth(authConfig)
 		providers := providers.NewProviders(oauthConfig)
 		hooks := hooks.NewHooks(hooksConfig, auth, providers)
 		linkDB := linkdb.New(config.LinkDBPath)
 		adminEmails := strings.Split(config.AdminEmails, ",")
-		handlers := handlers.NewHandlers(handlersConfig, auth, hooks, providers, docker, linkDB, adminEmails)
+		handlers := handlers.NewHandlers(handlersConfig, auth, hooks, providers, linkDB, adminEmails)
 		srv, err := server.NewServer(serverConfig, handlers)
 		HandleError(err, "Failed to create server")
 
