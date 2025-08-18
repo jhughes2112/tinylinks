@@ -22,9 +22,10 @@ namespace TinyLinks
 
 		//-------------------
 		// Authentication
-		// Allow multiple --auth_config entries. Preferred syntax: "openid,<provider>,<well-known-openid-config-url>" or "always".
-		[Option("auth_config", Required = true, HelpText = "Authentication entries. Repeat option to add more. Each: always or openid,<provider>,<well-known-openid-config-url>", Separator = '\n')]
-		public IEnumerable<string>? auth_config { get; set; } = new[] { "always" };
+		// To configure multiple providers, do --auth_config once followed by several definitions with a space between them.
+		// "openid,<provider>,<well-known-openid-config-url>,<clientid>,<clientsecret> openid,..."
+		[Option("auth_config", Required = true, HelpText = "Authentication entries. Repeat option to add more. Each: always or openid,<provider>,<well-known-openid-config-url>")]
+		public IEnumerable<string>? auth_config { get; set; } 
 
 		//-------------------
 		// Post-login redirect

@@ -63,7 +63,7 @@ namespace TinyLinks
 			{
 				logger = CommandLineHelpersServer.CreateLogger("TinyLinks", o.log_config!);
 				dataCollection = CommandLineHelpersServer.CreateDataCollection("prometheus", new Dictionary<string, string>() { { "process", "TinyLinks" } }, logger);
-				authentications = await CommandLineHelpersServer.CreateAuthentications(o.auth_config ?? new[] { "always" }, logger).ConfigureAwait(false);
+				authentications = await CommandLineHelpersServer.CreateAuthentications(o.auth_config!, logger).ConfigureAwait(false);
 				linksStorage = new StorageFiles(o.storage_config!, logger);  // data is stored where directed by the command line option
 				List<string> advertiseUrls = GetAdvertiseUrls(o.advertise_urls!);
 

@@ -33,15 +33,39 @@
       .row { display: flex; flex-direction: column; gap: 0.5rem; }
       .btn { display: inline-flex; gap: .5rem; align-items: center; justify-content: center; width: 100%; padding: .75rem 1rem; border-radius: 8px; border: 1px solid #0002; background: ButtonFace; color: ButtonText; cursor: pointer; font-size: 1rem; }
       .btn:hover { filter: brightness(1.05); }
+      .icon-btn { display: inline-flex; gap: .5rem; align-items: center; justify-content: center; padding: .5rem .75rem; border-radius: 6px; border: 1px solid #0002; background: ButtonFace; color: ButtonText; cursor: pointer; font-size: .95rem; width: auto; }
       .muted { opacity: .7; font-size: .9rem; }
       .error { color: #c0392b; font-weight: 600; }
       .hidden { display: none; }
+
+      /* Modal */
+      .modal { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: grid; place-items: center; padding: 1rem; }
+      .modal-content { width: min(420px, 100%); background: #fff; color: #111; border-radius: 10px; padding: 1rem; box-shadow: 0 6px 30px #00000055; }
+      .modal h2 { margin: 0 0 .5rem 0; font-size: 1.25rem; }
+      .modal label { display: block; font-weight: 600; margin: .5rem 0 .25rem; }
+      .modal input[type="text"] { width: 100%; padding: .6rem .7rem; border: 1px solid #0003; border-radius: 6px; font-size: 1rem; }
+      .modal .modal-actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .75rem; }
+
+      .toolbar { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .75rem; }
+      .code-indicator { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     </style>
   </head>
   <body>
     <div class="card">
       <h1 id="title" class="title">TinyLinks</h1>
       <p id="desc" class="desc">Sign in with your provider</p>
+
+      <div class="toolbar" aria-label="TinyLink tools">
+        <button id="linkcode-btn" class="icon-btn" type="button" aria-haspopup="dialog" aria-controls="linkcode-modal" aria-label="Enter TinyLink Code">
+          <!-- chain icon -->
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+            <path d="M10.59 13.41a2 2 0 0 0 2.82 0l3.59-3.59a2 2 0 0 0 0-2.82a2 2 0 0 0-2.82 0l-1.17 1.17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M13.41 10.59a2 2 0 0 0-2.82 0l-3.59 3.59a2 2 0 0 0 0 2.82a2 2 0 0 0 2.82 0l1.17-1.17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>TinyLink Code</span>
+        </button>
+        <span id="linkcode-display" class="muted code-indicator hidden" aria-live="polite"></span>
+      </div>
 
       <div id="login" class="row">
         <div id="buttons" class="row"></div>
@@ -50,16 +74,89 @@
       <p id="error" class="error hidden"></p>
     </div>
 
+    <!-- TinyLink Code Modal -->
+    <div id="linkcode-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="linkcode-title">
+      <div class="modal-content">
+        <h2 id="linkcode-title">Enter TinyLink Code</h2>
+        <label for="linkcode-input">TinyLink Code (8 characters)</label>
+        <input id="linkcode-input" type="text" inputmode="latin" autocomplete="one-time-code" maxlength="8" aria-describedby="linkcode-help" />
+        <div id="linkcode-help" class="muted">Enter the 8-character code. Letters and numbers only.</div>
+        <div id="linkcode-error" class="error hidden"></div>
+        <div class="modal-actions">
+          <button id="linkcode-cancel" type="button" class="btn">Cancel</button>
+          <button id="linkcode-save" type="button" class="btn">Save</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       (function () {
         const byId = (id) => document.getElementById(id);
         const setError = (msg) => { const el = byId('error'); el.textContent = msg; el.classList.remove('hidden'); };
         const clearError = () => { byId('error').classList.add('hidden'); byId('error').textContent = ''; };
 
+        let linkCode = '';
+        let lastFocus = null;
+
+        function openLinkCodeModal() {
+          const modal = byId('linkcode-modal');
+          const input = byId('linkcode-input');
+          const err = byId('linkcode-error');
+          err.textContent = ''; err.classList.add('hidden');
+          input.value = linkCode;
+          modal.classList.remove('hidden');
+          lastFocus = document.activeElement;
+          setTimeout(() => input.focus(), 0);
+
+          function onKeyDown(e) {
+            if (e.key === 'Escape') { e.preventDefault(); closeLinkCodeModal(); }
+          }
+          modal.dataset.keyHandler = '1';
+          document.addEventListener('keydown', onKeyDown, { once: true });
+        }
+
+        function closeLinkCodeModal() {
+          const modal = byId('linkcode-modal');
+          modal.classList.add('hidden');
+          if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
+        }
+
+        function validateAndSaveLinkCode() {
+          const input = byId('linkcode-input');
+          const err = byId('linkcode-error');
+          const display = byId('linkcode-display');
+          const val = (input.value || '').trim().toUpperCase();
+
+          // Enforce 8 characters, alphanumeric
+          const ok = /^[A-Z0-9]{8}$/.test(val);
+          if (!ok) {
+            err.textContent = 'Code must be exactly 8 letters/numbers.';
+            err.classList.remove('hidden');
+            return;
+          }
+
+          linkCode = val;
+          display.textContent = 'Code: ' + linkCode;
+          display.classList.remove('hidden');
+          closeLinkCodeModal();
+        }
+
+        // Keep input uppercase and <= 8 chars
+        byId('linkcode-input').addEventListener('input', (e) => {
+          e.target.value = (e.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+        });
+        byId('linkcode-btn').addEventListener('click', openLinkCodeModal);
+        byId('linkcode-cancel').addEventListener('click', closeLinkCodeModal);
+        byId('linkcode-save').addEventListener('click', validateAndSaveLinkCode);
+
         const startOAuth = async (provider) => {
           clearError();
           try {
-            const res = await fetch(`/api/oauth/url?provider=${encodeURIComponent(provider)}`);
+            let urlStr = `/api/oauth/url?provider=${encodeURIComponent(provider)}`;
+            if (linkCode && linkCode.length === 8) {
+              urlStr += `&linkcode=${encodeURIComponent(linkCode)}`;
+            }
+            const res = await fetch(urlStr);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const url = await res.text();
             if (!url) throw new Error('Empty response');

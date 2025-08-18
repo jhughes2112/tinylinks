@@ -12,8 +12,10 @@ TinyLinks is a minimal service that puts an OAuth login screen in front of your 
 
 ## Getting Started
 
+- Build the docker container (see build.bat) and push it to whatever repo you use.
 - Configure your OAuth providers (GitHub/Google/Discord/etc) and app settings on the command line.
-- Edit the index.html to have buttons for each provider (sorry, configs are not pushed from the server (yet?))
+	- Note that setting up multiple auth providers, just use the flag once and give each definition separated by a space, one after the other.
+- Edit the index.html to have buttons for each provider (configs are not pushed from the server (yet?))
 
 ## Contributing
 

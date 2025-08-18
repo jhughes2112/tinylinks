@@ -1,5 +1,4 @@
 ﻿using Logging;
-using Shared;
 using System;
 using System.Threading.Tasks;
 
