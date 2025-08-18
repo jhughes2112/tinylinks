@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TinyLinks</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        margin: 0;
+        padding: 2rem;
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        background-image: url('background.jpg');
+        background-repeat: no-repeat;
+        background-position: center center;
+        background-attachment: fixed;
+        background-size: auto 100vh;
+      }
+      .card {
+        width: min(480px, 100%);
+        border: 1px solid #3a3a3a44;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 10px #00000010;
+        background-color: rgba(255, 255, 255, 0.8);
+        color: #111;
+      }
+      .title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem 0; text-align: center; }
+      .desc { opacity: 0.8; margin: 0 0 1rem 0; text-align: center; }
+      .row { display: flex; flex-direction: column; gap: 0.5rem; }
+      .btn { display: inline-flex; gap: .5rem; align-items: center; justify-content: center; width: 100%; padding: .75rem 1rem; border-radius: 8px; border: 1px solid #0002; background: ButtonFace; color: ButtonText; cursor: pointer; font-size: 1rem; }
+      .btn:hover { filter: brightness(1.05); }
+      .muted { opacity: .7; font-size: .9rem; }
+      .error { color: #c0392b; font-weight: 600; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1 id="title" class="title">TinyLinks</h1>
+      <p id="desc" class="desc">Sign in with your provider</p>
+
+      <div id="login" class="row">
+        <div id="buttons" class="row"></div>
+      </div>
+
+      <p id="error" class="error hidden"></p>
+    </div>
+
+    <script>
+      (function () {
+        const byId = (id) => document.getElementById(id);
+        const setError = (msg) => { const el = byId('error'); el.textContent = msg; el.classList.remove('hidden'); };
+        const clearError = () => { byId('error').classList.add('hidden'); byId('error').textContent = ''; };
+
+        const startOAuth = async (provider) => {
+          clearError();
+          try {
+            const res = await fetch(`/api/oauth/url?provider=${encodeURIComponent(provider)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const url = await res.text();
+            if (!url) throw new Error('Empty response');
+            window.location.href = url;
+          } catch (e) {
+            setError('Failed to start OAuth. Please try again.');
+            console.error(e);
+          }
+        };
+
+        // Icons
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = (name) => document.createElementNS(NS, name);
+        function iconGithub() {
+          const s = svg('svg');
+          s.setAttribute('viewBox', '0 0 24 24');
+          s.setAttribute('width', '20');
+          s.setAttribute('height', '20');
+          const p = svg('path');
+          p.setAttribute('fill', 'currentColor');
+          p.setAttribute('d', 'M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5c.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34c-.46-1.16-1.11-1.47-1.11-1.47c-.91-.62.07-.6.07-.6c1 .07 1.53 1.03 1.53 1.03c.87 1.52 2.34 1.07 2.91.83c.09-.65.35-1.09.63-1.34c-2.22-.25-4.55-1.11-4.55-4.92c0-1.11.38-2 1.03-2.71c-.1-.25-.45-1.29.1-2.64c0 0 .84-.27 2.75 1.02c.79-.22 1.65-.33 2.5-.33s1.71.11 2.5.33c1.91-1.29 2.75-1.02 2.75-1.02c.55 1.35.2 2.39.1 2.64c.65.71 1.03 1.6 1.03 2.71c0 3.82-2.34 4.66-4.57 4.91c.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2');
+          s.appendChild(p);
+          return s;
+        }
+        function iconGoogle() {
+          const s = svg('svg');
+          s.setAttribute('viewBox', '0 0 256 262');
+          s.setAttribute('width', '20');
+          s.setAttribute('height', '20');
+          const p1 = svg('path'); p1.setAttribute('fill', '#4285f4'); p1.setAttribute('d', 'M255.878 133.451c0-10.734-.871-18.567-2.756-26.69H130.55v48.448h71.947c-1.45 12.04-9.283 30.172-26.69 42.356l-.244 1.622l38.755 30.023l2.685.268c24.659-22.774 38.875-56.282 38.875-96.027');
+          const p2 = svg('path'); p2.setAttribute('fill', '#34a853'); p2.setAttribute('d', 'M130.55 261.1c35.248 0 64.839-11.605 86.453-31.622l-41.196-31.913c-11.024 7.688-25.82 13.055-45.257 13.055c-34.523 0-63.824-22.773-74.269-54.25l-1.531.13l-40.298 31.187l-.527 1.465C35.393 231.798 79.49 261.1 130.55 261.1');
+          const p3 = svg('path'); p3.setAttribute('fill', '#fbbc05'); p3.setAttribute('d', 'M56.281 156.37c-2.756-8.123-4.351-16.827-4.351-25.82c0-8.994 1.595-17.697 4.206-25.82l-.073-1.73L15.26 71.312l-1.335.635C5.077 89.644 0 109.517 0 130.55s5.077 40.905 13.925 58.602z');
+          const p4 = svg('path'); p4.setAttribute('fill', '#eb4335'); p4.setAttribute('d', 'M130.55 50.479c24.514 0 41.05 10.589 50.479 19.438l36.844-35.974C195.245 12.91 165.798 0 130.55 0C79.49 0 35.393 29.301 13.925 71.947l42.211 32.783c10.59-31.477 39.891-54.251 74.414-54.251');
+          s.append(p1, p2, p3, p4);
+          return s;
+        }
+
+        const renderButtons = (providers) => {
+          const container = byId('buttons');
+          container.innerHTML = '';
+          const names = { github: 'GitHub', google: 'Google' };
+          const icons = { github: iconGithub, google: iconGoogle };
+          providers.forEach((p) => {
+            const btn = document.createElement('button');
+            btn.className = 'btn';
+            btn.type = 'button';
+            btn.setAttribute('aria-label', `Sign in with ${names[p] || p}`);
+            const ico = (icons[p] || (()=>document.createTextNode('')) )();
+            const label = document.createElement('span');
+            label.textContent = names[p] || p;
+            if (ico.nodeType === 1) btn.appendChild(ico);
+            btn.appendChild(label);
+            btn.onclick = () => startOAuth(p);
+            container.appendChild(btn);
+          });
+        };
+
+        // Fixed list for now; server controls final redirect
+        renderButtons(['google', 'github']);
+      })();
+    </script>
+  </body>
+</html>

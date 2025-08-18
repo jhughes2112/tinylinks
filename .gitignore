@@ -1,0 +1,11 @@
+**/obj/
+**/.vs/
+**/bin/
+**/Library/
+**/Temp/
+**/Build/
+**/Logs/
+**/publish/
+*.user
+userpass.txt
+**/launchSettings.json
