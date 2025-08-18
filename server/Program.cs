@@ -69,7 +69,7 @@ namespace TinyLinks
 
 				// The reason this takes in a CancellationTokenSource is Docker/someone may hit ^C and want to shutdown the server.
 				// The reason we explicitly call Shutdown is the server itself may exit for other reasons, and we need to make sure it shuts down in either case.
-				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.post_login_redirect!, o.session_duration, linksStorage!);
+				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.post_login_redirect!, o.session_duration, o.linkcreate_secret!, linksStorage!);
 
 				// Set up a websocket handler that forwards connections, disconnections, and messages to the ClusterServer
 				ConnectionManagerReject connectionMgr = new ConnectionManagerReject(logger);

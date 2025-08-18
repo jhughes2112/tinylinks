@@ -34,6 +34,9 @@ namespace TinyLinks
 		[Option("session_duration", Required = false, Default = 3600, HelpText = "Duration of a logged in session in seconds, after which user will need to login again.")]
 		public int session_duration { get; set; }
 
+		[Option("linkcreate_secret", Required = true, HelpText = "Your application provides this secret to generate masquerade links, which prevents JWT theft resulting in account theft.")]
+		public string? linkcreate_secret { get; set; }
+
 		//-------------------
 		// Static content and hosting
 		[Option("advertise_urls", Required = true, Default = "http://localhost:7777/", HelpText = "Comma-separated list of URLs that requests should look like to the server. Example: 'http://localhost:7777/,https://example.com:8080/wiki/'")]

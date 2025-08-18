@@ -31,6 +31,7 @@ namespace TinyLinks
 		private readonly List<IAuthentication> _authProviders;
 		private readonly string?               _postLoginRedirect;
 		private int                            _sessionDurationSeconds      = 3600; // 1 hour session cookie
+		private string                         _linkcreateSecret;           // secret used to create link codes
 		private const string                   kDownstreamSessionCookieName = "tinylinks_session";
 		private const string                   kOAuthStateCookieName        = "oauth_state";
 
@@ -59,9 +60,8 @@ namespace TinyLinks
 		// Persistent storage for link relationships
 		private readonly StorageFiles _linksStorage;
 
-		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, string postLoginRedirect, int sessionDurationSeconds, StorageFiles linksStorage)
+		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, string postLoginRedirect, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage)
 		{
-			_logger.Log(EVerbosity.Info, $"Server initializing.");
 			_advertiseUrls           = advertiseUrls;
 			_staticRootFolder        = staticRootFolder;
 			_dataCollection          = dataCollection;
@@ -70,7 +70,10 @@ namespace TinyLinks
 			_authProviders           = new List<IAuthentication>(authentications);
 			_postLoginRedirect       = postLoginRedirect;
 			_sessionDurationSeconds  = sessionDurationSeconds;
+			_linkcreateSecret        = linkcreateSecret;
 			_linksStorage            = linksStorage;
+
+			_logger.Log(EVerbosity.Info, $"Server initializing.");
 
 			// Metrics initialization
 			_dataCollection.CreateCounter(kCounterLoginCalls,        "Total OAuth callback attempts");
@@ -249,19 +252,6 @@ namespace TinyLinks
 			return _linksStorage.Write(fromSub, bytes);
 		}
 
-		private string CreateDownstreamJwt(Uri issuerBase, string sub, string? email, string[]? roles, long exp)
-		{
-			Dictionary<string, object?> claims = new Dictionary<string, object?>();
-			claims["iss"] = issuerBase.AbsoluteUri.TrimEnd('/');
-			claims["sub"] = sub;
-			claims["exp"] = exp;
-			claims["iat"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-			claims["email"] = email;
-			claims["roles"] = roles ?? Array.Empty<string>();
-			string token = _jwt.CreateToken(claims, issuerBase.AbsoluteUri.TrimEnd('/'));
-			return token;
-		}
-
 		private static string SanitizeMetricNamePart(string name)
 		{
 			string result = string.Empty;
@@ -316,7 +306,7 @@ namespace TinyLinks
 							string codeVerifier = UrlHelper.GenerateRandomDataBase64url(64);
 							byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
 							byte[] hash = SHA256.HashData(bytes);
-							string codeChallenge = UrlHelper.Base64UrlEncodeNoPadding(hash);
+							String codeChallenge = UrlHelper.Base64UrlEncodeNoPadding(hash);
 
 							string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
 							string? linkCode = http.Request.QueryString["linkcode"];
@@ -421,7 +411,7 @@ namespace TinyLinks
 
 											// See if this login has an override sub, and if so, be that account instead.  If not, use the downstreamSub as is.
 											string finalSub = await TryGetOverrideSub(downstreamSub).ConfigureAwait(false) ?? downstreamSub;
-											string downstreamJwt = CreateDownstreamJwt(baseUri, finalSub, email, roles, exp);
+											string downstreamJwt = _jwt.CreateServerJWTWithSub(baseUri, finalSub, email, roles, exp);
 
 											// Log success and masquerade status
 											if (string.Equals(finalSub, downstreamSub, StringComparison.Ordinal))
@@ -740,27 +730,39 @@ namespace TinyLinks
 					// Count total link create calls
 					_dataCollection.IncrementCounter(kCounterLinkCreateCalls, 1);
 
-					string? cookieHeader = http.Request.Headers["Cookie"];
-					string? jwt = ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
-					Utilities.JwtPayload? payload;
-					if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
+					// Require secret on query line
+					string? providedSecret = http.Request.QueryString["secret"];
+					if (string.IsNullOrWhiteSpace(providedSecret) || string.Equals(providedSecret, _linkcreateSecret, StringComparison.Ordinal) == false)
 					{
-						string code = Guid.NewGuid().ToString().Split('-')[0];
-						DateTime expires = DateTime.UtcNow.AddSeconds(kLinkCodeTtlSeconds);
-						_codes.AddOrUpdate(code, new CodeRecord(payload.sub!, expires));
-						_logger.Log(EVerbosity.Info, $"LinkCreate sub={payload.sub} code={code}");
-						// success metric
-						_dataCollection.IncrementCounter(kCounterLinkCreateSuccess, 1);
-						statusCode = 200;
-						contentType = "text/plain";
-						content = Encoding.UTF8.GetBytes(code);
-					}
-					else
-					{
-						_logger.Log(EVerbosity.Warning, "LinkCreate Unauthorized (no or invalid session)");
+						_logger.Log(EVerbosity.Warning, "LinkCreate Unauthorized (missing or invalid secret)");
 						statusCode = 401;
 						contentType = "text/plain";
 						content = Encoding.UTF8.GetBytes("Unauthorized");
+					}
+					else
+					{
+						string? cookieHeader = http.Request.Headers["Cookie"];
+						string? jwt = ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+						Utilities.JwtPayload? payload;
+						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
+						{
+							string code = Guid.NewGuid().ToString().Split('-')[0];
+							DateTime expires = DateTime.UtcNow.AddSeconds(kLinkCodeTtlSeconds);
+							_codes.AddOrUpdate(code, new CodeRecord(payload.sub!, expires));
+							_logger.Log(EVerbosity.Info, $"LinkCreate sub={payload.sub} code={code}");
+							// success metric
+							_dataCollection.IncrementCounter(kCounterLinkCreateSuccess, 1);
+							statusCode = 200;
+							contentType = "text/plain";
+							content = Encoding.UTF8.GetBytes(code);
+						}
+						else
+						{
+							_logger.Log(EVerbosity.Warning, "LinkCreate Unauthorized (no or invalid session)");
+							statusCode = 401;
+							contentType = "text/plain";
+							content = Encoding.UTF8.GetBytes("Unauthorized");
+						}
 					}
 				}
 				else
@@ -812,7 +814,7 @@ namespace TinyLinks
 					}
 					else
 					{
-						_logger.Log(EVerbosity.Warning, "Unlink Unauthorized (no or invalid session)");
+						_logger.Log(EVerbosity.Warning, "Unlink Unauthorized (no or valid session)");
 						statusCode = 401;
 						contentType = "text/plain";
 						content = Encoding.UTF8.GetBytes("Unauthorized");
@@ -838,7 +840,31 @@ namespace TinyLinks
 		}
 
 		// Request/Model DTOs
-		private sealed class CodeRecord { public string Sub { get; } public DateTime Expires { get; } public CodeRecord(string sub, DateTime expires) { Sub = sub; Expires = expires; } }
-		private sealed class OAuthStateEntry { public string Provider { get; } public string CodeVerifier { get; } public string CallbackUrl { get; } public DateTime CreatedUtc { get; } public string? LinkCode { get; } public OAuthStateEntry(string provider, string codeVerifier, string callbackUrl, DateTime createdUtc, string? linkCode) { Provider = provider; CodeVerifier = codeVerifier; CallbackUrl = callbackUrl; CreatedUtc = createdUtc; LinkCode = linkCode; } }
+		private sealed class CodeRecord 
+		{ 
+			public string   Sub     { get; } 
+			public DateTime Expires { get; } 
+			public CodeRecord(string sub, DateTime expires) 
+			{ 
+				Sub     = sub; 
+				Expires = expires; 
+			} 
+		}
+		private sealed class OAuthStateEntry 
+		{ 
+			public string   Provider     { get; } 
+			public string   CodeVerifier { get; } 
+			public string   CallbackUrl  { get; } 
+			public DateTime CreatedUtc   { get; } 
+			public string?  LinkCode     { get; } 
+			public OAuthStateEntry(string provider, string codeVerifier, string callbackUrl, DateTime createdUtc, string? linkCode) 
+			{ 
+				Provider     = provider; 
+				CodeVerifier = codeVerifier; 
+				CallbackUrl  = callbackUrl; 
+				CreatedUtc   = createdUtc; 
+				LinkCode     = linkCode; 
+			} 
+		}
 	}
 }
