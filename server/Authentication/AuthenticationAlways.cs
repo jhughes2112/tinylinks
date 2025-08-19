@@ -18,7 +18,7 @@ namespace Authentication
 		private ILogging _logger;
 
 		// OAuth state (short TTL)
-		private const    int    kAlwaysStateTtlSeconds = 9; // 9 seconds to complete your login right now, will adjust it up in a bit
+		private const    int    kAlwaysStateTtlSeconds = 300; // 5 minutes to complete your login
 		private const    string kAlwaysStateCookieName = "always_state";
 		
 		// When someone tries to authenticate, we stash some info in this object so it can be used when they finish the authentication flow and want to continue.

@@ -25,7 +25,7 @@ namespace Authentication
 		private readonly string _clientSecret;
 
 		// OAuth state (short TTL)
-		private const    int    kOAuthStateTtlSeconds = 9; // 9 seconds to complete your login right now, will adjust it up in a bit
+		private const    int    kOAuthStateTtlSeconds = 300; // 5 minutes to complete your login
 		private const    string kOAuthStateCookieName = "oauth_state";
 		
 		// When someone tries to authenticate, we stash some info in this object so it can be used when they finish the authentication flow and want to continue.

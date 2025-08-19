@@ -22,8 +22,8 @@ namespace Authentication
 		private const string kTokenEndpoint = "https://discord.com/api/oauth2/token";
 		private const string kUserInfoUri   = "https://discord.com/api/users/@me";
 
-		// OAuth state (short TTL)
-		private const int    kStateTtlSeconds = 9;
+		// OAuth state (short TTL) - five minutes is plenty of time to click through
+		private const int    kStateTtlSeconds = 300;
 		private const string kStateCookieName = "discord_state";
 
 		private sealed class OAuthStateEntry
