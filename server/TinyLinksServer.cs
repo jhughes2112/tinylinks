@@ -10,7 +10,6 @@ using System.Threading.Tasks;
 using HeyRed.Mime;
 using Shared; // ThreadSafeDictionary
 using Authentication; // IAuthentication
-using System.Security.Cryptography;
 using System.Text.Json;
 using Utilities;
 using Storage;
@@ -24,16 +23,18 @@ namespace TinyLinks
 		private string                         _staticRootFolder;
 		private IDataCollection                _dataCollection;
 		private ILogging                       _logger;
+		private StorageFiles                   _linksStorage;
 		private Task                           _updateThread                = Task.CompletedTask;
 		private CancellationTokenSource        _cancellationTokenSrc;
 		private CancellationTokenSource?       _cancellationTokenSrcUpdate;
+		private readonly JwtSigner             _jwt = new JwtSigner();      // Server JWT signer (RS256) for downstream cookies and JWKS
 
 		private readonly List<IAuthentication> _authProviders;
 		private readonly string?               _postLoginRedirect;
 		private int                            _sessionDurationSeconds      = 3600; // 1 hour session cookie
 		private string                         _linkcreateSecret;           // secret used to create link codes
+		private const int                      kLinkCodeTtlSeconds          = 3600;
 		private const string                   kDownstreamSessionCookieName = "tinylinks_session";
-		private const string                   kOAuthStateCookieName        = "oauth_state";
 
 		// Metrics counters (created at startup)
 		private const string kCounterLoginCalls          = "tl_login_calls";
@@ -43,22 +44,19 @@ namespace TinyLinks
 		private const string kCounterUnlinkCalls         = "tl_unlink_calls";
 		private const string kCounterUnlinkSuccess       = "tl_unlink_success";
 
-		// Link code TTL
-		private const int                      kLinkCodeTtlSeconds          = 3600;
+		private sealed class CodeRecord 
+		{ 
+			public string   Sub     { get; } 
+			public DateTime Expires { get; } 
+			public CodeRecord(string sub, DateTime expires) 
+			{ 
+				Sub     = sub; 
+				Expires = expires; 
+			} 
+		}
 
-		// OAuth state (short TTL)
-		private const int kOAuthStateTtlSeconds = 9; // 9 seconds to complete your login right now, will adjust it up in a bit
-		private readonly ThreadSafeDictionary<string, OAuthStateEntry> _oauthStates = new ThreadSafeDictionary<string, OAuthStateEntry>();
-
-		// Server JWT signer (RS256) for downstream cookies and JWKS
-		private readonly JwtSigner _jwt = new JwtSigner();
-
-		// In-memory, minimal storage for link codes and relationships (bad/simple implementation)
+		// In-memory, storage for link codes that expire quickly
 		private readonly ThreadSafeDictionary<string, CodeRecord>      _codes = new ThreadSafeDictionary<string, CodeRecord>();
-		private readonly ThreadSafeDictionary<string, HashSet<string>> _links = new ThreadSafeDictionary<string, HashSet<string>>();
-
-		// Persistent storage for link relationships
-		private readonly StorageFiles _linksStorage;
 
 		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, string postLoginRedirect, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage)
 		{
@@ -72,6 +70,9 @@ namespace TinyLinks
 			_sessionDurationSeconds  = sessionDurationSeconds;
 			_linkcreateSecret        = linkcreateSecret;
 			_linksStorage            = linksStorage;
+
+			if (string.IsNullOrWhiteSpace(_postLoginRedirect) || string.IsNullOrWhiteSpace(staticRootFolder) || string.IsNullOrWhiteSpace(_linkcreateSecret) || _authProviders.Count==0)
+				throw new ArgumentException("TinyLinksStorage has missing, empty, or null configuration fields");
 
 			_logger.Log(EVerbosity.Info, $"Server initializing.");
 
@@ -123,22 +124,10 @@ namespace TinyLinks
 				{
 					await Task.Delay(1000, token).ConfigureAwait(false);  // Once a second, wake up and see if anything needs to be done
 
-					// expire old auth states
-					if (_oauthStates.Count > 0)
+					// Let the auth providers clean themselves over time
+					foreach (IAuthentication auth in _authProviders)
 					{
-						List<string> expired = new List<string>();
-						DateTime now = DateTime.UtcNow;
-						_oauthStates.Foreach((k, v) =>
-						{
-							if ((now - v.CreatedUtc).TotalSeconds > kOAuthStateTtlSeconds)
-							{
-								expired.Add(k);
-							}
-						});
-						foreach (string k in expired)
-						{
-							_oauthStates.Remove(k);
-						}
+						auth.Tick();
 					}
 
 					// expire old link codes
@@ -181,30 +170,6 @@ namespace TinyLinks
 						break;
 					}
 				}
-			}
-			return result;
-		}
-
-		private static string? ExtractCookie(string? cookieHeader, string cookieName)
-		{
-			string? result = null;
-			if (!string.IsNullOrWhiteSpace(cookieHeader))
-			{
-				string search = cookieName + "=";
-				string[] parts = cookieHeader.Split(';');
-				for (int i = 0; i < parts.Length; i++)
-				{
-					string p = parts[i].Trim();
-					if (p.StartsWith(search, StringComparison.Ordinal))
-					{
-						result = p.Substring(search.Length);
-						break;
-					}
-				}
-			}
-			else
-			{
-				result = null;
 			}
 			return result;
 		}
@@ -285,7 +250,7 @@ namespace TinyLinks
 		}
 
 		// ---------------- OAuth endpoints ----------------
-		public Task<(int, string, byte[])> OAuthUrl(HttpListenerContext http)
+		public async Task<(int, string, byte[])> OAuthUrl(HttpListenerContext http)
 		{
 			int statusCode = 200;
 			string contentType = "text/plain";
@@ -302,29 +267,8 @@ namespace TinyLinks
 						IAuthentication? auth = _authProviders.Find(p => string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
 						if (auth != null)
 						{
-							string state = UrlHelper.GenerateRandomDataBase64url(32);
-							string codeVerifier = UrlHelper.GenerateRandomDataBase64url(64);
-							byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
-							byte[] hash = SHA256.HashData(bytes);
-							String codeChallenge = UrlHelper.Base64UrlEncodeNoPadding(hash);
-
-							string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
-							string? linkCode = http.Request.QueryString["linkcode"];
-							_oauthStates.AddOrUpdate(state, new OAuthStateEntry(provider, codeVerifier, callbackUrl, DateTime.UtcNow, linkCode));
-
-							try
-							{
-								http.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}={state}; Max-Age={kOAuthStateTtlSeconds}; Path=/; HttpOnly");
-							}
-							catch
-							{
-								// ignore cookie add failure
-							}
-
-							string url = auth.BuildAuthorizeUrl(callbackUrl, state, codeChallenge);
-							statusCode = 200;
-							contentType = "text/plain";
-							content = Encoding.UTF8.GetBytes(url);
+							// See how the auth system wants to handle this call.  State will be set in a cookie so the callback can retrieve it later.
+							(statusCode, contentType, content) = await auth.StartAuthenticate(baseUri, http).ConfigureAwait(false);
 						}
 						else
 						{
@@ -358,9 +302,10 @@ namespace TinyLinks
 				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
 			}
 
-			return Task.FromResult((statusCode, contentType, content));
+			return (statusCode, contentType, content);
 		}
 
+		// On the callback, we ask grab the cookie and see what provider the state variable is associated with.  Then we dispatch to it.
 		public async Task<(int, string, byte[])> OAuthCallback(HttpListenerContext http)
 		{
 			int statusCode = 200;
@@ -375,133 +320,86 @@ namespace TinyLinks
 					// Count total login attempts hitting callback
 					_dataCollection.IncrementCounter(kCounterLoginCalls, 1);
 
-					string? code = http.Request.QueryString["code"];
-					string? state = http.Request.QueryString["state"];
-					if (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(state))
+					bool found = false;
+					foreach (IAuthentication auth in _authProviders)
 					{
-						string? cookieHeader = http.Request.Headers["Cookie"];
-						string? stateCookie = ExtractCookie(cookieHeader, kOAuthStateCookieName);
-						if (!string.IsNullOrWhiteSpace(stateCookie) && string.Equals(stateCookie, state, StringComparison.Ordinal))
+						if (auth.IsThisYours(http))
 						{
-							if (_oauthStates.TryRemove(state, out OAuthStateEntry entry))
+							found = true;
+							(string? upstreamSub, string? fullName, string? email, string[]? roles, string? linkcode) = await auth.AuthenticateCallback(baseUri, http).ConfigureAwait(false);
+							if (!string.IsNullOrEmpty(upstreamSub))
 							{
-								IAuthentication? auth = _authProviders.Find(p => string.Equals(p.Provider, entry.Provider, StringComparison.OrdinalIgnoreCase));
-								if (auth != null)
+								long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+								long exp = now + _sessionDurationSeconds;
+
+								string downstreamSub = auth.Provider + "_" + upstreamSub!;
+
+								// If there is a link code, see if it's valid, and if so, write a masquerade file for this login so this login will appear to be the other account.
+								if (!string.IsNullOrWhiteSpace(linkcode))
 								{
-									string? id_token = await auth.ExchangeCodeForJwtAsync(code!, entry.CallbackUrl, entry.CodeVerifier).ConfigureAwait(false);
-									if (!string.IsNullOrEmpty(id_token))
+									if (_codes.TryRemove(linkcode, out CodeRecord rec) && DateTime.UtcNow <= rec.Expires)
 									{
-										(string? upstreamSub, string? fullName, string? email, string[]? roles) = auth.Authenticate(id_token);
-										if (!string.IsNullOrEmpty(upstreamSub))
-										{
-											long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-											long exp = now + _sessionDurationSeconds;
-
-											string downstreamSub = entry.Provider + "_" + upstreamSub!;
-
-											// If there is a link code, see if it's valid, and if so, write a masquerade file for this login so this login will appear to be the other account.
-											if (!string.IsNullOrWhiteSpace(entry.LinkCode))
-											{
-												if (_codes.TryRemove(entry.LinkCode!, out CodeRecord rec) && DateTime.UtcNow <= rec.Expires)
-												{
-													await SaveOverrideSub(downstreamSub, rec.Sub).ConfigureAwait(false);
-													_logger.Log(EVerbosity.Info, $"Linked override set {downstreamSub} -> {rec.Sub}");
-												}
-											}
-
-											// See if this login has an override sub, and if so, be that account instead.  If not, use the downstreamSub as is.
-											string finalSub = await TryGetOverrideSub(downstreamSub).ConfigureAwait(false) ?? downstreamSub;
-											string downstreamJwt = _jwt.CreateServerJWTWithSub(baseUri, finalSub, email, roles, exp);
-
-											// Log success and masquerade status
-											if (string.Equals(finalSub, downstreamSub, StringComparison.Ordinal))
-											{
-												_logger.Log(EVerbosity.Info, $"Login success provider={entry.Provider} sub={finalSub} email={(email ?? string.Empty)} masquerade=false");
-											}
-											else
-											{
-												_logger.Log(EVerbosity.Info, $"Login success provider={entry.Provider} sub={finalSub} email={(email ?? string.Empty)} masquerade=true as {finalSub} from {downstreamSub}");
-											}
-
-											// Metrics: success + provider counter
-											_dataCollection.IncrementCounter(kCounterLoginSuccess, 1);
-											string provSan = SanitizeMetricNamePart(entry.Provider);
-											string provCounter = GetProviderSuccessCounterName(provSan);
-											_dataCollection.CreateCounter(provCounter, "Successful logins per provider"); // safe if already exists
-											_dataCollection.IncrementCounter(provCounter, 1);
-
-											try
-											{
-												http.Response.Headers.Add("Set-Cookie", $"{kDownstreamSessionCookieName}={downstreamJwt}; Max-Age={_sessionDurationSeconds}; Path=/; HttpOnly");
-												http.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}=; Max-Age=0; Path=/");
-											}
-											catch
-											{
-												// ignore cookie add failure
-											}
-
-											if (!string.IsNullOrWhiteSpace(_postLoginRedirect))
-											{
-												string redirectWithToken = AppendTokenToUrl(_postLoginRedirect!, downstreamJwt);
-												http.Response.RedirectLocation = redirectWithToken;
-												statusCode = 307;
-												contentType = "text/plain";
-												content = Encoding.UTF8.GetBytes("Redirecting");
-											}
-											else
-											{
-												_logger.Log(EVerbosity.Error, "post_login_redirect not configured");
-												statusCode = 500;
-												contentType = "text/plain";
-												content = Encoding.UTF8.GetBytes("post_login_redirect not configured");
-											}
-										}
-										else
-										{
-											_logger.Log(EVerbosity.Warning, "OAuthCallback invalid token from provider");
-											statusCode = 401;
-											contentType = "text/plain";
-											content = Encoding.UTF8.GetBytes("Invalid token");
-										}
+										await SaveOverrideSub(downstreamSub, rec.Sub).ConfigureAwait(false);
+										_logger.Log(EVerbosity.Info, $"Linked override set {downstreamSub} -> {rec.Sub}");
 									}
-									else
-									{
-										_logger.Log(EVerbosity.Warning, "OAuthCallback token exchange failed");
-										statusCode = 401;
-										contentType = "text/plain";
-										content = Encoding.UTF8.GetBytes("Token exchange failed");
-									}
+								}
+
+								// See if this login has an override sub, and if so, be that account instead.  If not, use the downstreamSub as is.
+								string finalSub = await TryGetOverrideSub(downstreamSub).ConfigureAwait(false) ?? downstreamSub;
+								string downstreamJwt = _jwt.CreateServerJWT(baseUri, finalSub, email, roles, exp);
+
+								// Log success and masquerade status
+								if (string.Equals(finalSub, downstreamSub, StringComparison.Ordinal))
+								{
+									_logger.Log(EVerbosity.Info, $"Login success provider={auth.Provider} sub={finalSub} email={(email ?? string.Empty)} masquerade=false");
 								}
 								else
 								{
-									_logger.Log(EVerbosity.Warning, "OAuthCallback Unknown provider");
-									statusCode = 400;
+									_logger.Log(EVerbosity.Info, $"Login success provider={auth.Provider} sub={finalSub} email={(email ?? string.Empty)} masquerade=true as {finalSub} from {downstreamSub}");
+								}
+
+								// Metrics: success + provider counter
+								_dataCollection.IncrementCounter(kCounterLoginSuccess, 1);
+								string provSan = SanitizeMetricNamePart(auth.Provider);
+								string provCounter = GetProviderSuccessCounterName(provSan);
+								_dataCollection.IncrementCounter(provCounter, 1);
+
+								try
+								{
+									// Try to set a cookie with the downstream JWT so we can skip this up until the session timeout
+									http.Response.Headers.Add("Set-Cookie", $"{kDownstreamSessionCookieName}={downstreamJwt}; Max-Age={_sessionDurationSeconds}; Path=/; HttpOnly");
+
+									string redirectWithToken = AppendTokenToUrl(_postLoginRedirect!, downstreamJwt);
+									http.Response.RedirectLocation = redirectWithToken;
+									statusCode = 307;
 									contentType = "text/plain";
-									content = Encoding.UTF8.GetBytes("Unknown provider");
+									content = Encoding.UTF8.GetBytes("Redirecting");
+								}
+								catch
+								{
+									// ignore cookie add failure
+									_logger.Log(EVerbosity.Warning, "OAuthCallback cookie failed to set");
+									statusCode = 401;
+									contentType = "text/plain";
+									content = Encoding.UTF8.GetBytes("Cookie failure");
 								}
 							}
-							else 
+							else
 							{
-								_logger.Log(EVerbosity.Warning, "OAuthCallback Unknown or expired state");
-								statusCode = 400;
+								_logger.Log(EVerbosity.Warning, "OAuthCallback authentication failed for provider");
+								statusCode = 401;
 								contentType = "text/plain";
-								content = Encoding.UTF8.GetBytes("Unknown or expired state");
+								content = Encoding.UTF8.GetBytes("Invalid token");
 							}
-						}
-						else
-						{
-							_logger.Log(EVerbosity.Warning, "OAuthCallback Invalid state (cookie mismatch)");
-							statusCode = 400;
-							contentType = "text/plain";
-							content = Encoding.UTF8.GetBytes("Invalid state");
+							break;
 						}
 					}
-					else
+					if (found==false)
 					{
-						_logger.Log(EVerbosity.Warning, "OAuthCallback Missing code or state");
+						_logger.Log(EVerbosity.Warning, "OAuthCallback no provider claimed connection");
 						statusCode = 400;
 						contentType = "text/plain";
-						content = Encoding.UTF8.GetBytes("Missing code or state");
+						content = Encoding.UTF8.GetBytes("Invalid state");
 					}
 				}
 				else
@@ -621,9 +519,8 @@ namespace TinyLinks
 					if (string.IsNullOrEmpty(relative) || string.Equals(relative, "index.html", StringComparison.OrdinalIgnoreCase))
 					{
 						string? cookieHeader = httpListenerContext.Request.Headers["Cookie"];
-						string? jwt = ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
-						Utilities.JwtPayload? payload;
-						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload))
+						string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out Utilities.JwtPayload? payload))
 						{
 							_logger.Log(EVerbosity.Info, $"Auto-redirecting authenticated user {payload!.sub}");
 							if (!string.IsNullOrWhiteSpace(_postLoginRedirect))
@@ -704,7 +601,7 @@ namespace TinyLinks
 				else
 				{
 					string fileName = Path.GetFileName(fullPathNormalized).ToLowerInvariant();
-					string detectedContentType = HeyRed.Mime.MimeTypesMap.GetMimeType(fileName);
+					string detectedContentType = MimeTypesMap.GetMimeType(fileName);
 					byte[] bytes = await File.ReadAllBytesAsync(fullPathNormalized).ConfigureAwait(false);
 					statusCode = 200;
 					contentType = detectedContentType;
@@ -742,7 +639,7 @@ namespace TinyLinks
 					else
 					{
 						string? cookieHeader = http.Request.Headers["Cookie"];
-						string? jwt = ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+						string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
 						Utilities.JwtPayload? payload;
 						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
 						{
@@ -799,7 +696,7 @@ namespace TinyLinks
 					_dataCollection.IncrementCounter(kCounterUnlinkCalls, 1);
 
 					string? cookieHeader = http.Request.Headers["Cookie"];
-					string? jwt = ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+					string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
 					Utilities.JwtPayload? payload;
 					if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
 					{
@@ -837,34 +734,6 @@ namespace TinyLinks
 			}
 
 			return (statusCode, contentType, content);
-		}
-
-		// Request/Model DTOs
-		private sealed class CodeRecord 
-		{ 
-			public string   Sub     { get; } 
-			public DateTime Expires { get; } 
-			public CodeRecord(string sub, DateTime expires) 
-			{ 
-				Sub     = sub; 
-				Expires = expires; 
-			} 
-		}
-		private sealed class OAuthStateEntry 
-		{ 
-			public string   Provider     { get; } 
-			public string   CodeVerifier { get; } 
-			public string   CallbackUrl  { get; } 
-			public DateTime CreatedUtc   { get; } 
-			public string?  LinkCode     { get; } 
-			public OAuthStateEntry(string provider, string codeVerifier, string callbackUrl, DateTime createdUtc, string? linkCode) 
-			{ 
-				Provider     = provider; 
-				CodeVerifier = codeVerifier; 
-				CallbackUrl  = callbackUrl; 
-				CreatedUtc   = createdUtc; 
-				LinkCode     = linkCode; 
-			} 
 		}
 	}
 }

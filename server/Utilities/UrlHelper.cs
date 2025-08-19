@@ -56,5 +56,23 @@ namespace Shared
 			return Convert.FromBase64String(output);
 		}
 
+		// Finds the desired cookie and returns the value it was set to.
+		static public string? ExtractCookie(string? cookieHeader, string cookieName)
+		{
+			if (!string.IsNullOrWhiteSpace(cookieHeader))
+			{
+				string search = cookieName + "=";
+				string[] parts = cookieHeader.Split(';');
+				for (int i = 0; i < parts.Length; i++)
+				{
+					string p = parts[i].Trim();
+					if (p.StartsWith(search, StringComparison.Ordinal))
+					{
+						return p.Substring(search.Length);
+					}
+				}
+			}
+			return null;
+		}
 	}
 }

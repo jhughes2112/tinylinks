@@ -1,4 +1,8 @@
-﻿namespace Authentication
+﻿using System;
+using System.Net;
+using System.Threading.Tasks;
+
+namespace Authentication
 {
 	// This allows us to have pluggable account authentication and OIDC provider flows.
 	public interface IAuthentication
@@ -8,18 +12,17 @@
 		// Provider label (e.g., "google", "authentik") used in routing and selection
 		string Provider { get; }
 
-		// Helper that takes in httpListenerContext.Request.Headers.GetValues("Authorization")
-		public (string?, string?, string?, string[]?) AuthenticateRequest(string[]? authorizationHeaders);
+		// This gets called every second or so, allowing them to clean up if they made a mess.
+		public void Tick();
 
-		// authstring is a JWT that is cracked into parts.  If it's invalid, accountId is returned null.  Otherwise you get a valid accountId and non-null roles.
-		// Full name and email may or may not be set, so be prepared to fall back to accountId to display something, but always trust accountId is a unique string.
-		// (accountId, full name, email, roles[])
-		public (string?, string?, string?, string[]?) Authenticate(string authstring);
+		// Any kind of authentication system will return the statusCode, contentType, and content for the response.  It may set cookies or otherwise.
+		// OpenID will internally track some stuff and redirect to the callback url.  Discord will do something similar, but WHAT it does is different.
+		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext);
 
-		// Build an authorization URL for the provider using server-managed flow (Authorization Code + PKCE)
-		string BuildAuthorizeUrl(string redirectUri, string state, string codeChallenge);
+		// When the callback happens, we run through and figure out who owns this request.  It is up to the implementation to remember which ones were theirs.
+		public bool IsThisYours(HttpListenerContext httpContext);
 
-		// Exchange an authorization code for a JWT using the given code_verifier, returns the id_token which has three parts and most of the important details (accountId, full name, email, roles[]).
-		System.Threading.Tasks.Task<string?> ExchangeCodeForJwtAsync(string code, string redirectUri, string codeVerifier);
+		// (upstreamSub, fullName, email, roles, linkcode) 
+		public Task<(string?, string?, string?, string[]?, string?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext);
 	}
 }

@@ -7,57 +7,151 @@ using System.Text.Json;
 using Shared;
 using System.Net.Http;
 using System.Threading.Tasks;
+using System.Net;
 
 namespace Authentication
 {
-	// This checks that the JWT was signed by the correct private key, and also supports building OIDC authorize URLs and code exchange.
-	public class AuthenticationJWT : IAuthentication
+	// This handles the OAuth2 server-flow for standard JWT-based authentication servers.
+	public class AuthenticationOAuth2 : IAuthentication
 	{
 		private readonly Dictionary<string, RSA> _publicKeys;
 		private readonly ILogging                _logger;
 
 		// OIDC / OAuth2 provider metadata
 		public string Provider { get; private set; } = string.Empty;
-		private readonly string? _authorizationEndpoint;
-		private readonly string? _tokenEndpoint;
-		private readonly string? _clientId;
-		private readonly string? _clientSecret;
+		private readonly string _authorizationEndpoint;
+		private readonly string _tokenEndpoint;
+		private readonly string _clientId;
+		private readonly string _clientSecret;
 
-		public AuthenticationJWT(Dictionary<string, RSA> publicKeys, ILogging logger)
-		{
-			_publicKeys = publicKeys;
-			_logger     = logger;
+		// OAuth state (short TTL)
+		private const    int    kOAuthStateTtlSeconds = 9; // 9 seconds to complete your login right now, will adjust it up in a bit
+		private const    string kOAuthStateCookieName = "oauth_state";
+		
+		// When someone tries to authenticate, we stash some info in this object so it can be used when they finish the authentication flow and want to continue.
+		private sealed class OAuthStateEntry 
+		{ 
+			public string   CodeVerifier { get; } 
+			public DateTime CreatedUtc   { get; } 
+			public string?  LinkCode     { get; } 
+			public OAuthStateEntry(string codeVerifier, DateTime createdUtc, string? linkCode) 
+			{ 
+				CodeVerifier = codeVerifier; 
+				CreatedUtc   = createdUtc; 
+				LinkCode     = linkCode; 
+			} 
 		}
 
-		public AuthenticationJWT(string provider, string authorizationEndpoint, string tokenEndpoint, string clientId, string? clientSecret, Dictionary<string, RSA> publicKeys, ILogging logger)
+		private readonly ThreadSafeDictionary<string, OAuthStateEntry> _oauthStates = new ThreadSafeDictionary<string, OAuthStateEntry>();
+
+		public AuthenticationOAuth2(string provider, string authorizationEndpoint, string tokenEndpoint, string clientId, string clientSecret, Dictionary<string, RSA> publicKeys, ILogging logger)
 		{
-			Provider = provider ?? string.Empty;
+			Provider = provider;
 			_authorizationEndpoint = authorizationEndpoint;
 			_tokenEndpoint = tokenEndpoint;
 			_clientId = clientId;
 			_clientSecret = clientSecret;
 			_publicKeys = publicKeys;
 			_logger = logger;
+
+			if (string.IsNullOrEmpty(Provider) || string.IsNullOrEmpty(_authorizationEndpoint) || string.IsNullOrEmpty(_tokenEndpoint) || string.IsNullOrEmpty(_clientId) || string.IsNullOrEmpty(clientSecret) || publicKeys.Count==0)
+				throw new InvalidOperationException("AuthenticationOAuth2 has nulls.");
 		}
 
-		// Call this with httpListenerContext.Request.Headers.GetValues("Authorization");
-		public (string?, string?, string?, string[]?) AuthenticateRequest(string[]? authorizationHeaders)
+		public void Tick()
 		{
-			string? token = null;
-			if (authorizationHeaders != null && authorizationHeaders.Length > 0)
+			// expire old auth states
+			if (_oauthStates.Count > 0)
 			{
-				token = authorizationHeaders[0];
-				if (token!=null && token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+				List<string> expired = new List<string>();
+				DateTime now = DateTime.UtcNow;
+				_oauthStates.Foreach((k, v) =>
 				{
-					token = token.Substring("Bearer ".Length).Trim();
+					if ((now - v.CreatedUtc).TotalSeconds > kOAuthStateTtlSeconds)
+					{
+						expired.Add(k);
+					}
+				});
+				foreach (string k in expired)
+				{
+					_oauthStates.Remove(k);
 				}
 			}
-			return Authenticate(token);
 		}
 
-		// Actual functionality of the JWT validation uses the RSA key list
-		// (accountId, full name, email, roles[])
-		public (string?, string?, string?, string[]?) Authenticate(string? jwt)
+		// This is an OpenID handshake, and we stash most of the info in a dictionary by a random state value so we can retrieve it later.
+		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext)
+		{
+			try
+			{
+				string state = UrlHelper.GenerateRandomDataBase64url(32);
+				httpContext.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}={state}; Max-Age={kOAuthStateTtlSeconds}; Path=/; HttpOnly");
+
+				string codeVerifier = UrlHelper.GenerateRandomDataBase64url(64);
+				byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
+				byte[] hash = SHA256.HashData(bytes);
+				String codeChallenge = UrlHelper.Base64UrlEncodeNoPadding(hash);
+
+				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
+				string? linkCode = httpContext.Request.QueryString["linkcode"];
+				_oauthStates.AddOrUpdate(state, new OAuthStateEntry(codeVerifier, DateTime.UtcNow, linkCode));
+
+				string url = $"{_authorizationEndpoint}?response_type=code&scope=openid+profile+email&redirect_uri={Uri.EscapeDataString(callbackUrl)}&client_id={Uri.EscapeDataString(_clientId)}&state={Uri.EscapeDataString(state)}&code_challenge={Uri.EscapeDataString(codeChallenge)}&code_challenge_method=S256";
+				return Task.FromResult((200, "text/plain", Encoding.UTF8.GetBytes(url)));
+			}
+			catch
+			{
+				return Task.FromResult((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
+			}
+		}
+
+		// Just inspects the query and cookie headers to see if they match.
+		public bool IsThisYours(HttpListenerContext httpContext)
+		{
+			bool isMine = false;
+			string? state = httpContext.Request.QueryString["state"];
+			string? cookieHeader = httpContext.Request.Headers["Cookie"];
+			if (!string.IsNullOrWhiteSpace(state) && !string.IsNullOrWhiteSpace(cookieHeader))
+			{
+				string? stateCookie = UrlHelper.ExtractCookie(cookieHeader, kOAuthStateCookieName);
+				isMine = !string.IsNullOrWhiteSpace(stateCookie) && string.Equals(stateCookie, state, StringComparison.Ordinal);
+			}
+			return isMine;
+		}
+
+		public async Task<(string?, string?, string?, string[]?, string?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
+		{
+			// We already verified this is the correct state and it's ours.
+			string state = httpContext.Request.QueryString["state"]!;
+			if (_oauthStates.TryRemove(state, out OAuthStateEntry entry))
+			{
+				// wipe out that cookie
+				try
+				{
+					httpContext.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}=; Max-Age=0; Path=/");
+
+					string? code = httpContext.Request.QueryString["code"];
+					if (string.IsNullOrWhiteSpace(code)==false)
+					{
+						// fetch the JWT from the remote server
+						string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
+						string? id_token = await ExchangeCodeForJwtAsync(code!, callbackUrl, entry.CodeVerifier).ConfigureAwait(false);
+						if (string.IsNullOrEmpty(id_token)==false)
+						{
+							// crack the JWT into the important parts
+							(string? sub, string? fullName, string? email, string[]? roles) = Authenticate(id_token);
+							return (sub, fullName, email, roles, entry.LinkCode);
+						}
+					}
+				}
+				catch {}
+			}
+			return (null, null, null, null, null);
+		}
+
+		// authstring is a JWT that is cracked into parts.  If it's invalid, accountId is returned null.  Otherwise you get a valid accountId and non-null roles.
+		// Full name and email may or may not be set, so be prepared to fall back to accountId to display something, but always trust accountId is a unique string.
+		private (string?, string?, string?, string[]?) Authenticate(string? jwt)
 		{
 			string?   accountId = null;
 			string?   fullName  = null;
@@ -143,27 +237,9 @@ namespace Authentication
 			return (accountId, fullName, email, roles);
 		}
 
-		public string BuildAuthorizeUrl(string redirectUri, string state, string codeChallenge)
-		{
-			if (string.IsNullOrEmpty(_authorizationEndpoint) || string.IsNullOrEmpty(_clientId))
-				throw new InvalidOperationException("Authorization endpoint or client id not configured for this provider.");
-
-			string url = string.Format("{0}?response_type=code&scope=openid+profile+email&redirect_uri={1}&client_id={2}&state={3}&code_challenge={4}&code_challenge_method=S256",
-				_authorizationEndpoint,
-				Uri.EscapeDataString(redirectUri),
-				Uri.EscapeDataString(_clientId),
-				Uri.EscapeDataString(state),
-				Uri.EscapeDataString(codeChallenge)
-			);
-			return url;
-		}
-
 		// Exchange an authorization code for a JWT using the given code_verifier, returns the id_token which has three parts and most of the important details (accountId, full name, email, roles[]).
-		public async Task<string?> ExchangeCodeForJwtAsync(string code, string redirectUri, string codeVerifier)
+		private async Task<string?> ExchangeCodeForJwtAsync(string code, string redirectUri, string codeVerifier)
 		{
-			if (string.IsNullOrEmpty(_tokenEndpoint) || string.IsNullOrEmpty(_clientId))
-				throw new InvalidOperationException("Token endpoint or client id not configured for this provider.");
-
 			using (HttpClient httpClient = new HttpClient())
 			{
 				var postData = new Dictionary<string, string>

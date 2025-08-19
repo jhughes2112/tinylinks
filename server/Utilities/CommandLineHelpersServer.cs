@@ -37,18 +37,19 @@ namespace Utilities
 		{
             // Supported:
             //  - always
-            //  - openid,provider,wellknown-url
+			//  - discord,clientid,clientsecret
+            //  - openid,provider,wellknown-url,clientid,clientsecret
 			string[] parts = config.Split(',');
 			string authType  = parts[0].ToLowerInvariant();
 
 			switch (authType)
 			{
 				case "always":
-					return new AuthenticationAlways(logger);
+					return new AuthenticationAlways("admin123", "Admin User", "admin@mooncast.productions", new string[] { IAuthentication.kAdminRole }, logger);
 				case "openid":
 				{
 					if (parts.Length != 5)
-						throw new Exception("openid auth requires openid,provider,wellknown-url or openid,wellknown-url");
+						throw new Exception("openid auth requires openid,provider,wellknown-url,clientid,clientsecret");
 
 					string provider = parts[1];
 					string openIdUrl = parts[2];
@@ -59,8 +60,18 @@ namespace Utilities
 					Dictionary<string, RSA>? publicKeys = await helper.GetPublicKeys(openIdUrl).ConfigureAwait(false);
 					(string? authEndpoint, string? tokenEndpoint) = await helper.GetEndpoints(openIdUrl).ConfigureAwait(false);
 					if (publicKeys!=null && tokenEndpoint!=null && authEndpoint!=null)
-						return new AuthenticationJWT(provider, authEndpoint, tokenEndpoint, clientId, clientSecret, publicKeys, logger);
+						return new AuthenticationOAuth2(provider, authEndpoint, tokenEndpoint, clientId, clientSecret, publicKeys, logger);
 					throw new Exception($"No public keys or missing endpoint for openId provider {provider}");
+				}
+				case "discord":
+				{
+					if (parts.Length != 3)
+						throw new Exception("discord auth requires discord,clientid,clientsecret");
+
+					string clientId = parts[1];
+					string clientSecret = parts[2];
+
+					return new AuthenticationDiscord(clientId, clientSecret, logger);
 				}
 			}
 			throw new Exception($"Invalid authentication type: {authType}");
