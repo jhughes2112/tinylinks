@@ -249,9 +249,30 @@ namespace TinyLinks
 			return "tl_login_success_provider_" + providerSanitized;
 		}
 
+		// Add CORS headers for cross-origin requests
+		private static void AddCors(HttpListenerRequest request, HttpListenerResponse response, string allowedMethods)
+		{
+			string? origin = request.Headers["Origin"];
+			if (!string.IsNullOrEmpty(origin))
+			{
+				response.Headers["Access-Control-Allow-Origin"] = origin;
+				response.Headers["Vary"] = "Origin";
+				response.Headers["Access-Control-Allow-Credentials"] = "true";
+				response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+				response.Headers["Access-Control-Allow-Methods"] = allowedMethods;
+				response.Headers["Access-Control-Max-Age"] = "600";
+			}
+		}
+
 		// ---------------- OAuth endpoints ----------------
 		public async Task<(int, string, byte[])> OAuthUrl(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
@@ -308,6 +329,12 @@ namespace TinyLinks
 		// On the callback, we ask grab the cookie and see what provider the state variable is associated with.  Then we dispatch to it.
 		public async Task<(int, string, byte[])> OAuthCallback(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
@@ -425,6 +452,12 @@ namespace TinyLinks
 		// Well-known endpoints for openid_configuration and jwks.json
 		public Task<(int, string, byte[])> OpenIdConfiguration(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return Task.FromResult<(int, string, byte[])>((204, "text/plain", Array.Empty<byte>()));
+			}
+
 			int statusCode = 200;
 			string contentType = "application/json";
 			byte[] content = Array.Empty<byte>();
@@ -461,6 +494,12 @@ namespace TinyLinks
 
 		public Task<(int, string, byte[])> Jwks(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return Task.FromResult<(int, string, byte[])>((204, "text/plain", Array.Empty<byte>()));
+			}
+
 			int statusCode = 200;
 			string contentType = "application/json";
 			byte[] content = Array.Empty<byte>();
@@ -505,6 +544,12 @@ namespace TinyLinks
 		// Static_root file server with auto-redirect on valid session at base
 		public async Task<(int, string, byte[])> GetClient(HttpListenerContext httpListenerContext)
 		{
+			AddCors(httpListenerContext.Request, httpListenerContext.Response, "GET, OPTIONS");
+			if (string.Equals(httpListenerContext.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
@@ -615,6 +660,12 @@ namespace TinyLinks
 		// ---------------- Short link endpoints ----------------
 		public Task<(int, string, byte[])> LinkCreate(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return Task.FromResult<(int, string, byte[])>((204, "text/plain", Array.Empty<byte>()));
+			}
+
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
@@ -683,6 +734,12 @@ namespace TinyLinks
 
 		public async Task<(int, string, byte[])> UnlinkAccount(HttpListenerContext http)
 		{
+			AddCors(http.Request, http.Response, "POST, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();

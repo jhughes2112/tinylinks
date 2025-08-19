@@ -68,7 +68,7 @@ namespace Authentication
 		}
 
 		// Any kind of authentication system will return the statusCode, contentType, and content for the response.  It may set cookies or otherwise.
-		// Always just shortcuts the client to the callback url with the state in a cookie.
+		// Always now returns the callback URL as text to avoid fetch() redirect CORS issues.
 		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext)
 		{
 			try
@@ -80,14 +80,13 @@ namespace Authentication
 				string? linkCode = httpContext.Request.QueryString["linkcode"];
 				_alwaysStates.AddOrUpdate(state, new AlwaysStateEntry(DateTime.UtcNow, linkCode));
 
-				// Just force the redirect in the client immediately without hitting any other servers.
+				// Return the URL so the client can navigate, matching other providers' behavior.
 				string url = $"{callbackUrl}?&state={Uri.EscapeDataString(state)}";
-				httpContext.Response.RedirectLocation = url;
-				return Task.FromResult((307, "text/plain", Encoding.UTF8.GetBytes("Redirecting")));
+				return Task.FromResult<(int, string, byte[])>((200, "text/plain", Encoding.UTF8.GetBytes(url)));
 			}
 			catch
 			{
-				return Task.FromResult((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
+				return Task.FromResult<(int, string, byte[])>((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
 			}
 		}
 
