@@ -31,14 +31,16 @@ namespace Authentication
 		// When someone tries to authenticate, we stash some info in this object so it can be used when they finish the authentication flow and want to continue.
 		private sealed class OAuthStateEntry 
 		{ 
-			public string   CodeVerifier { get; } 
-			public DateTime CreatedUtc   { get; } 
-			public string?  LinkCode     { get; } 
-			public OAuthStateEntry(string codeVerifier, DateTime createdUtc, string? linkCode) 
+			public string                 CodeVerifier { get; } 
+			public DateTime               CreatedUtc   { get; } 
+			public string?                LinkCode     { get; } 
+			public DownstreamAuthRequest  Downstream   { get; }
+			public OAuthStateEntry(string codeVerifier, DateTime createdUtc, string? linkCode, DownstreamAuthRequest downstream) 
 			{ 
 				CodeVerifier = codeVerifier; 
 				CreatedUtc   = createdUtc; 
 				LinkCode     = linkCode; 
+				Downstream   = downstream; 
 			} 
 		}
 
@@ -80,7 +82,7 @@ namespace Authentication
 		}
 
 		// This is an OpenID handshake, and we stash most of the info in a dictionary by a random state value so we can retrieve it later.
-		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext)
+		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext, DownstreamAuthRequest downstream)
 		{
 			try
 			{
@@ -94,14 +96,15 @@ namespace Authentication
 
 				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
 				string? linkCode = httpContext.Request.QueryString["linkcode"];
-				_oauthStates.AddOrUpdate(state, new OAuthStateEntry(codeVerifier, DateTime.UtcNow, linkCode));
+				_oauthStates.AddOrUpdate(state, new OAuthStateEntry(codeVerifier, DateTime.UtcNow, linkCode, downstream));
 
 				string url = $"{_authorizationEndpoint}?response_type=code&scope=openid+profile+email&redirect_uri={Uri.EscapeDataString(callbackUrl)}&client_id={Uri.EscapeDataString(_clientId)}&state={Uri.EscapeDataString(state)}&code_challenge={Uri.EscapeDataString(codeChallenge)}&code_challenge_method=S256";
-				return Task.FromResult((200, "text/plain", Encoding.UTF8.GetBytes(url)));
+				httpContext.Response.RedirectLocation = url;
+				return Task.FromResult((307, "text/plain", Encoding.UTF8.GetBytes("Redirecting")));
 			}
 			catch
 			{
-				return Task.FromResult((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
+				return Task.FromResult<(int, string, byte[])>((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
 			}
 		}
 
@@ -119,7 +122,7 @@ namespace Authentication
 			return isMine;
 		}
 
-		public async Task<(string?, string?, string?, string[]?, string?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
+		public async Task<(string?, string?, string?, string[]?, string?, DownstreamAuthRequest?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
 		{
 			// We already verified this is the correct state and it's ours.
 			string state = httpContext.Request.QueryString["state"]!;
@@ -140,13 +143,13 @@ namespace Authentication
 						{
 							// crack the JWT into the important parts
 							(string? sub, string? fullName, string? email, string[]? roles) = Authenticate(id_token);
-							return (sub, fullName, email, roles, entry.LinkCode);
+							return (sub, fullName, email, roles, entry.LinkCode, entry.Downstream);
 						}
 					}
 				}
 				catch {}
 			}
-			return (null, null, null, null, null);
+			return (null, null, null, null, null, null);
 		}
 
 		// authstring is a JWT that is cracked into parts.  If it's invalid, accountId is returned null.  Otherwise you get a valid accountId and non-null roles.

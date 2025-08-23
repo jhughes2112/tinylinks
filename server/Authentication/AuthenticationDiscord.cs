@@ -28,14 +28,16 @@ namespace Authentication
 
 		private sealed class OAuthStateEntry
 		{
-			public string   CodeVerifier { get; }
-			public DateTime CreatedUtc   { get; }
-			public string?  LinkCode     { get; }
-			public OAuthStateEntry(string codeVerifier, DateTime createdUtc, string? linkCode)
+			public string                 CodeVerifier { get; }
+			public DateTime               CreatedUtc   { get; }
+			public string?                LinkCode     { get; }
+			public DownstreamAuthRequest  Downstream   { get; }
+			public OAuthStateEntry(string codeVerifier, DateTime createdUtc, string? linkCode, DownstreamAuthRequest downstream)
 			{
 				CodeVerifier = codeVerifier;
 				CreatedUtc   = createdUtc;
 				LinkCode     = linkCode;
+				Downstream   = downstream;
 			}
 		}
 
@@ -76,7 +78,7 @@ namespace Authentication
 		}
 
 		// Begin OAuth: set state cookie, stash verifier, return authorize URL as text/plain
-		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext)
+		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext, DownstreamAuthRequest downstream)
 		{
 			try
 			{
@@ -90,7 +92,7 @@ namespace Authentication
 
 				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
 				string? linkCode = httpContext.Request.QueryString["linkcode"];
-				_states.AddOrUpdate(state, new OAuthStateEntry(codeVerifier, DateTime.UtcNow, linkCode));
+				_states.AddOrUpdate(state, new OAuthStateEntry(codeVerifier, DateTime.UtcNow, linkCode, downstream));
 
 				// Discord scopes: identify email (space-separated)
 				string scopes = "identify email";
@@ -104,11 +106,12 @@ namespace Authentication
 					Uri.EscapeDataString(codeChallenge)
 				);
 
-				return Task.FromResult((200, "text/plain", Encoding.UTF8.GetBytes(url)));
+				httpContext.Response.RedirectLocation = url;
+				return Task.FromResult((307, "text/plain", Encoding.UTF8.GetBytes("Redirecting")));
 			}
 			catch
 			{
-				return Task.FromResult((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
+				return Task.FromResult<(int, string, byte[])>((401, "text/plain", Encoding.UTF8.GetBytes("Cookie set failed")));
 			}
 		}
 
@@ -127,17 +130,17 @@ namespace Authentication
 		}
 
 		// Complete flow: exchange code for access_token, fetch /users/@me, return identity
-		public async Task<(string?, string?, string?, string[]?, string?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
+		public async Task<(string?, string?, string?, string[]?, string?, DownstreamAuthRequest?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
 		{
 			string? state = httpContext.Request.QueryString["state"];
 			if (string.IsNullOrWhiteSpace(state))
 			{
-				return (null, null, null, null, null);
+				return (null, null, null, null, null, null);
 			}
 
 			if (_states.TryRemove(state, out OAuthStateEntry entry) == false)
 			{
-				return (null, null, null, null, null);
+				return (null, null, null, null, null, null);
 			}
 
 			try
@@ -148,7 +151,7 @@ namespace Authentication
 				string? code = httpContext.Request.QueryString["code"];
 				if (string.IsNullOrWhiteSpace(code))
 				{
-					return (null, null, null, null, null);
+					return (null, null, null, null, null, null);
 				}
 
 				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
@@ -156,26 +159,26 @@ namespace Authentication
 				DiscordTokenResponse? token = await ExchangeCodeForAccessTokenAsync(code!, callbackUrl, entry.CodeVerifier).ConfigureAwait(false);
 				if (token == null || string.IsNullOrWhiteSpace(token.access_token))
 				{
-					return (null, null, null, null, null);
+					return (null, null, null, null, null, null);
 				}
 
 				// Fetch user info
 				DiscordUserResponse? user = await GetUserAsync(token.access_token!).ConfigureAwait(false);
 				if (user == null || string.IsNullOrWhiteSpace(user.id))
 				{
-					return (null, null, null, null, null);
+					return (null, null, null, null, null, null);
 				}
 
 				string sub = user.id!;
 				string? fullName = string.IsNullOrWhiteSpace(user.global_name) ? user.username : user.global_name;
 				string? email = user.email; // only present with email scope and if verified
 				string[] roles = Array.Empty<string>();
-				return (sub, fullName, email, roles, entry.LinkCode);
+				return (sub, fullName, email, roles, entry.LinkCode, entry.Downstream);
 			}
 			catch (Exception ex)
 			{
 				_logger.Log(EVerbosity.Error, $"Discord auth failed: {ex}");
-				return (null, null, null, null, null);
+				return (null, null, null, null, null, null);
 			}
 		}
 

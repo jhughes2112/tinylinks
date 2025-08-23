@@ -69,7 +69,7 @@ namespace TinyLinks
 
 				// The reason this takes in a CancellationTokenSource is Docker/someone may hit ^C and want to shutdown the server.
 				// The reason we explicitly call Shutdown is the server itself may exit for other reasons, and we need to make sure it shuts down in either case.
-				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.post_login_redirect!, o.session_duration, o.linkcreate_secret!, linksStorage!);
+				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.session_duration, o.linkcreate_secret!, linksStorage!);
 
 				// Set up a websocket handler that forwards connections, disconnections, and messages to the ClusterServer
 				ConnectionManagerReject connectionMgr = new ConnectionManagerReject(logger);
@@ -82,8 +82,10 @@ namespace TinyLinks
 				// Explicit API handlers
 				webServer.RegisterExactEndpoint("/.well-known/openid-configuration", server.OpenIdConfiguration);
 				webServer.RegisterExactEndpoint("/.well-known/jwks.json", server.Jwks);
-				webServer.RegisterExactEndpoint("/api/oauth/url", server.OAuthUrl);        // if the user wants to log in and masquerade as another account, they call this with ?linkcode=<code> and the server knows to start masquerading as the appropriate user
+				webServer.RegisterExactEndpoint("/api/oauth/url", server.OAuthUrl);        // Downstream authorize endpoint
+				webServer.RegisterExactEndpoint("/api/oauth/upstream", server.OAuthUpstream); // Start upstream provider flow
 				webServer.RegisterExactEndpoint("/api/oauth/callback", server.OAuthCallback);
+				webServer.RegisterExactEndpoint("/api/oidc/token", server.Token);           // OIDC token endpoint
 				webServer.RegisterExactEndpoint("/api/link/create", server.LinkCreate);    // game must call this with ?secret=<gamesecret>&userjwt=<jwt> to create a link to allow another account to masquerade as this one
 				webServer.RegisterExactEndpoint("/api/link/unlink", server.UnlinkAccount); // user can call this with ?userjwt=<jwt> to disable masquerading as another account
 
@@ -108,7 +110,9 @@ namespace TinyLinks
 				webServer?.UnregisterExactEndpoint("/.well-known/openid-configuration");
 				webServer?.UnregisterExactEndpoint("/.well-known/jwks.json");
 				webServer?.UnregisterExactEndpoint("/api/oauth/url");
+				webServer?.UnregisterExactEndpoint("/api/oauth/upstream");
 				webServer?.UnregisterExactEndpoint("/api/oauth/callback");
+				webServer?.UnregisterExactEndpoint("/api/oidc/token");           // OIDC token endpoint
 				webServer?.UnregisterExactEndpoint("/api/link/create");
 				webServer?.UnregisterExactEndpoint("/api/link/unlink");
 				webServer?.UnregisterExactEndpoint("/metrics");
@@ -138,9 +142,6 @@ namespace TinyLinks
 		// Parse the comma-separated advertise_urls string into a list of URLs. Handles whitespace trimming and empty entries.
 		static private List<string> GetAdvertiseUrls(string advertise_urls)
 		{
-			if (string.IsNullOrWhiteSpace(advertise_urls))
-				return new List<string> { "http://localhost:7777/" };
-
 			var urls = new List<string>();
 			string[] parts = advertise_urls.Split(',');
 			foreach (string part in parts)

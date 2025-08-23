@@ -28,9 +28,6 @@ namespace TinyLinks
 		public IEnumerable<string>? auth_config { get; set; } 
 
 		//-------------------
-		// Post-login redirect
-		[Option("post_login_redirect", Required = true, HelpText = "Absolute URL to redirect users to after successful login.")]
-		public string? post_login_redirect { get; set; }
 
 		[Option("session_duration", Required = false, Default = 3600, HelpText = "Duration of a logged in session in seconds, after which user will need to login again.")]
 		public int session_duration { get; set; }

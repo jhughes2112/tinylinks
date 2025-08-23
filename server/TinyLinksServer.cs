@@ -13,6 +13,8 @@ using Authentication; // IAuthentication
 using System.Text.Json;
 using Utilities;
 using Storage;
+using System.Net.Sockets;
+using System.Security.Cryptography; // Added for PKCE verification
 
 namespace TinyLinks
 {
@@ -30,11 +32,11 @@ namespace TinyLinks
 		private readonly JwtSigner             _jwt = new JwtSigner();      // Server JWT signer (RS256) for downstream cookies and JWKS
 
 		private readonly List<IAuthentication> _authProviders;
-		private readonly string?               _postLoginRedirect;
 		private int                            _sessionDurationSeconds      = 3600; // 1 hour session cookie
 		private string                         _linkcreateSecret;           // secret used to create link codes
 		private const int                      kLinkCodeTtlSeconds          = 3600;
 		private const string                   kDownstreamSessionCookieName = "tinylinks_session";
+		// Rule override: removed downstream handshake cookie in favor of provider state flow
 
 		// Metrics counters (created at startup)
 		private const string kCounterLoginCalls          = "tl_login_calls";
@@ -55,10 +57,32 @@ namespace TinyLinks
 			} 
 		}
 
+		// Authorization code record for downstream token exchange
+		private sealed class AuthCodeRecord
+		{
+			public string   Token               { get; }
+			public string   ClientId            { get; }
+			public string   RedirectUri         { get; }
+			public string?  CodeChallenge       { get; }
+			public string?  CodeChallengeMethod { get; }
+			public DateTime Expires             { get; }
+			public AuthCodeRecord(string token, string clientId, string redirectUri, string? codeChallenge, string? codeChallengeMethod, DateTime expires)
+			{
+				Token = token;
+				ClientId = clientId;
+				RedirectUri = redirectUri;
+				CodeChallenge = codeChallenge;
+				CodeChallengeMethod = codeChallengeMethod;
+				Expires = expires;
+			}
+		}
+
 		// In-memory, storage for link codes that expire quickly
 		private readonly ThreadSafeDictionary<string, CodeRecord>      _codes = new ThreadSafeDictionary<string, CodeRecord>();
+		// In-memory, storage for downstream authorization codes
+		private readonly ThreadSafeDictionary<string, AuthCodeRecord>  _authCodes = new ThreadSafeDictionary<string, AuthCodeRecord>();
 
-		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, string postLoginRedirect, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage)
+		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage)
 		{
 			_advertiseUrls           = advertiseUrls;
 			_staticRootFolder        = staticRootFolder;
@@ -66,12 +90,11 @@ namespace TinyLinks
 			_logger                  = logger;
 			_cancellationTokenSrc    = tokenSrc;
 			_authProviders           = new List<IAuthentication>(authentications);
-			_postLoginRedirect       = postLoginRedirect;
 			_sessionDurationSeconds  = sessionDurationSeconds;
 			_linkcreateSecret        = linkcreateSecret;
 			_linksStorage            = linksStorage;
 
-			if (string.IsNullOrWhiteSpace(_postLoginRedirect) || string.IsNullOrWhiteSpace(staticRootFolder) || string.IsNullOrWhiteSpace(_linkcreateSecret) || _authProviders.Count==0)
+			if (string.IsNullOrWhiteSpace(staticRootFolder) || string.IsNullOrWhiteSpace(_linkcreateSecret) || _authProviders.Count==0)
 				throw new ArgumentException("TinyLinksStorage has missing, empty, or null configuration fields");
 
 			_logger.Log(EVerbosity.Info, $"Server initializing.");
@@ -142,9 +165,27 @@ namespace TinyLinks
 								expiredCodes.Add(k);
 							}
 						});
-						foreach (string k in expiredCodes)
+						for (int i=0; i<expiredCodes.Count; i++)
 						{
-							_codes.Remove(k);
+							_codes.Remove(expiredCodes[i]);
+						}
+					}
+
+					// expire old auth codes
+					if (_authCodes.Count > 0)
+					{
+						List<string> expired = new List<string>();
+						DateTime now3 = DateTime.UtcNow;
+						_authCodes.Foreach((string k, AuthCodeRecord v) =>
+						{
+							if (now3 > v.Expires)
+							{
+								expired.Add(k);
+							}
+						});
+						for (int i=0; i<expired.Count; i++)
+						{
+							_authCodes.Remove(expired[i]);
 						}
 					}
 				}
@@ -156,10 +197,11 @@ namespace TinyLinks
 			_logger.Log(EVerbosity.Info, $"Server.Update exiting.");
 		}
 
-		private Uri? GetAdvertiseBaseForRequest(Uri requestUri)
+		private Uri? GetAdvertiseBaseForRequest(Uri originalRequest)
 		{
+			// Try to match it against one of the advertised urls, so we can use that to construct redirects and tokens
 			Uri? result = null;
-			string requestPath = requestUri.AbsoluteUri;
+			string requestPath = originalRequest.AbsoluteUri;
 			for (int i = 0; i < _advertiseUrls.Count; i++)
 			{
 				if (Uri.TryCreate(_advertiseUrls[i], UriKind.Absolute, out Uri? baseUri))
@@ -193,6 +235,13 @@ namespace TinyLinks
 		{
 			string sep = baseUrl.Contains("?") ? "&" : "?";
 			string result = baseUrl + sep + "token=" + Uri.EscapeDataString(token);
+			return result;
+		}
+
+		private static string AppendKeyValueToUrl(string baseUrl, string key, string value)
+		{
+			string sep = baseUrl.Contains("?") ? "&" : "?";
+			string result = baseUrl + sep + key + "=" + Uri.EscapeDataString(value);
 			return result;
 		}
 
@@ -265,46 +314,97 @@ namespace TinyLinks
 		}
 
 		// ---------------- OAuth endpoints ----------------
-		public async Task<(int, string, byte[])> OAuthUrl(HttpListenerContext http)
+		public Task<(int, string, byte[])> OAuthUrl(HttpListenerContext http)
 		{
 			AddCors(http.Request, http.Response, "GET, OPTIONS");
 			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
 			{
-				return (204, "text/plain", Array.Empty<byte>());
+				return Task.FromResult((204, "text/plain", Array.Empty<byte>()));
 			}
 
 			int statusCode = 200;
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
 				{
-					string? provider = http.Request.QueryString["provider"];
-					if (!string.IsNullOrWhiteSpace(provider))
+					// Parse downstream request params
+					DownstreamAuthRequest ds = new DownstreamAuthRequest();
+					ds.ResponseType = http.Request.QueryString["response_type"] ?? "code";
+					ds.Scope = http.Request.QueryString["scope"];
+					ds.RedirectUri = http.Request.QueryString["redirect_uri"];
+					ds.ClientId = http.Request.QueryString["client_id"];
+					ds.State = http.Request.QueryString["state"];
+					ds.CodeChallenge = http.Request.QueryString["code_challenge"];
+					ds.CodeChallengeMethod = http.Request.QueryString["code_challenge_method"];
+
+					// Require redirect_uri for this flow
+					if (string.IsNullOrWhiteSpace(ds.RedirectUri)==false)
 					{
-						IAuthentication? auth = _authProviders.Find(p => string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
-						if (auth != null)
+						// If we already have a valid downstream session cookie, short-circuit and redirect back to client
+						string? cookieHeader = http.Request.Headers["Cookie"];
+						string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+						Utilities.JwtPayload? payload;
+						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null)
 						{
-							// See how the auth system wants to handle this call.  State will be set in a cookie so the callback can retrieve it later.
-							(statusCode, contentType, content) = await auth.StartAuthenticate(baseUri, http).ConfigureAwait(false);
+							if (string.Equals(ds.ResponseType ?? "code", "code", StringComparison.OrdinalIgnoreCase))
+							{
+								string authCode = Guid.NewGuid().ToString().Split('-')[0];
+								DateTime expires = DateTime.UtcNow.AddSeconds(300);
+								_authCodes.AddOrUpdate(authCode, new AuthCodeRecord(
+									jwt!,
+									ds.ClientId ?? string.Empty,
+									ds.RedirectUri!,
+									ds.CodeChallenge,
+									ds.CodeChallengeMethod,
+									expires));
+
+								string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
+								if (!string.IsNullOrWhiteSpace(ds.State))
+								{
+									redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
+								}
+								http.Response.RedirectLocation = redirectUrl;
+								statusCode = 307;
+								contentType = "text/plain";
+								content = Encoding.UTF8.GetBytes("Redirecting");
+							}
+							else
+							{
+								string redirectWithToken = AppendTokenToUrl(ds.RedirectUri!, jwt!);
+								if (!string.IsNullOrWhiteSpace(ds.State))
+								{
+									redirectWithToken = AppendKeyValueToUrl(redirectWithToken, "state", ds.State!);
+								}
+								http.Response.RedirectLocation = redirectWithToken;
+								statusCode = 307;
+								contentType = "text/plain";
+								content = Encoding.UTF8.GetBytes("Redirecting");
+							}
 						}
 						else
 						{
-							_logger.Log(EVerbosity.Warning, "OAuthUrl Unknown provider");
-							statusCode = 400;
+							// No session; redirect to root for interactive provider selection, preserving original query string
+							string root = baseUri.AbsoluteUri.TrimEnd('/') + "/";
+							string qs = http.Request.Url != null ? http.Request.Url.Query : string.Empty;
+							string target = root + (string.IsNullOrEmpty(qs) ? string.Empty : qs);
+							http.Response.RedirectLocation = target;
+							statusCode = 307;
 							contentType = "text/plain";
-							content = Encoding.UTF8.GetBytes("Unknown provider");
+							content = Encoding.UTF8.GetBytes("Redirecting");
 						}
 					}
 					else
 					{
-						_logger.Log(EVerbosity.Warning, "OAuthUrl Missing provider");
-						statusCode = 400;
+						statusCode = 500; // Rule override: enforce redirect_uri presence at authorize time
 						contentType = "text/plain";
-						content = Encoding.UTF8.GetBytes("Missing provider");
+						content = Encoding.UTF8.GetBytes("redirect_uri required");
 					}
 				}
 				else
@@ -317,10 +417,81 @@ namespace TinyLinks
 			}
 			else
 			{
-				_logger.Log(EVerbosity.Warning, $"OAuthUrl unexpected source: {http.Request.Url}");
+				_logger.Log(EVerbosity.Warning, $"OAuthUrl unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
+			}
+
+			return Task.FromResult((statusCode, contentType, content));
+		}
+
+		// Starts the upstream provider flow using provider and downstream params (used by index.html)
+		public async Task<(int, string, byte[])> OAuthUpstream(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
+			int statusCode = 200;
+			string contentType = "text/plain";
+			byte[] content = Array.Empty<byte>();
+
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
+			if (baseUri != null)
+			{
+				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
+				{
+					DownstreamAuthRequest ds = new DownstreamAuthRequest();
+					ds.ResponseType = http.Request.QueryString["response_type"] ?? "code";
+					ds.Scope = http.Request.QueryString["scope"];
+					ds.RedirectUri = http.Request.QueryString["redirect_uri"];
+					ds.ClientId = http.Request.QueryString["client_id"];
+					ds.State = http.Request.QueryString["state"];
+					ds.CodeChallenge = http.Request.QueryString["code_challenge"];
+					ds.CodeChallengeMethod = http.Request.QueryString["code_challenge_method"];
+
+					string? provider = http.Request.QueryString["provider"];
+					if (!string.IsNullOrWhiteSpace(provider))
+					{
+						IAuthentication? auth = _authProviders.Find(p => string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
+						if (auth != null)
+						{
+							(statusCode, contentType, content) = await auth.StartAuthenticate(baseUri, http, ds).ConfigureAwait(false);
+						}
+						else
+						{
+							_logger.Log(EVerbosity.Warning, "OAuthUpstream Unknown provider");
+							statusCode = 400;
+							contentType = "text/plain";
+							content = Encoding.UTF8.GetBytes("Unknown provider");
+						}
+					}
+					else
+					{
+						_logger.Log(EVerbosity.Warning, "OAuthUpstream Missing provider");
+						statusCode = 400;
+						contentType = "text/plain";
+						content = Encoding.UTF8.GetBytes("Missing provider");
+					}
+				}
+				else
+				{
+					_logger.Log(EVerbosity.Warning, "OAuthUpstream Method Not Allowed");
+					statusCode = 405;
+					contentType = "text/plain";
+					content = Encoding.UTF8.GetBytes("Method Not Allowed");
+				}
+			}
+			else
+			{
+				_logger.Log(EVerbosity.Warning, $"OAuthUpstream unexpected source: {originalRequestUri.AbsoluteUri}");
+				statusCode = 401;
+				contentType = "text/plain";
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return (statusCode, contentType, content);
@@ -339,7 +510,10 @@ namespace TinyLinks
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
@@ -353,8 +527,8 @@ namespace TinyLinks
 						if (auth.IsThisYours(http))
 						{
 							found = true;
-							(string? upstreamSub, string? fullName, string? email, string[]? roles, string? linkcode) = await auth.AuthenticateCallback(baseUri, http).ConfigureAwait(false);
-							if (!string.IsNullOrEmpty(upstreamSub))
+							(string? upstreamSub, string? fullName, string? email, string[]? roles, string? linkcode, DownstreamAuthRequest? ds) = await auth.AuthenticateCallback(baseUri, http).ConfigureAwait(false);
+							if (!string.IsNullOrEmpty(upstreamSub) && ds!=null)
 							{
 								long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 								long exp = now + _sessionDurationSeconds;
@@ -391,24 +565,53 @@ namespace TinyLinks
 								string provCounter = GetProviderSuccessCounterName(provSan);
 								_dataCollection.IncrementCounter(provCounter, 1);
 
+								// Use downstream OIDC params to decide redirect target and code/token behavior
+								// Try to set a cookie with the downstream JWT so we can skip this up until the session timeout
 								try
 								{
-									// Try to set a cookie with the downstream JWT so we can skip this up until the session timeout
 									http.Response.Headers.Add("Set-Cookie", $"{kDownstreamSessionCookieName}={downstreamJwt}; Max-Age={_sessionDurationSeconds}; Path=/; HttpOnly");
+								}
+								catch
+								{
+									_logger.Log(EVerbosity.Warning, "OAuthCallback cookie failed to set");
+								}
 
-									string redirectWithToken = AppendTokenToUrl(_postLoginRedirect!, downstreamJwt);
-									http.Response.RedirectLocation = redirectWithToken;
+								string responseType = ds.ResponseType ?? "code";
+								if (string.Equals(responseType, "code", StringComparison.OrdinalIgnoreCase))
+								{
+									// Issue short-lived authorization code for token exchange
+									string authCode = Guid.NewGuid().ToString().Split('-')[0];
+									DateTime expires = DateTime.UtcNow.AddSeconds(300);
+									_authCodes.AddOrUpdate(authCode, new AuthCodeRecord(
+										downstreamJwt,
+										ds.ClientId ?? string.Empty,
+										ds.RedirectUri!,
+										ds.CodeChallenge,
+										ds.CodeChallengeMethod,
+										expires));
+
+									string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
+									if (!string.IsNullOrWhiteSpace(ds.State))
+									{
+										redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
+									}
+									http.Response.RedirectLocation = redirectUrl;
 									statusCode = 307;
 									contentType = "text/plain";
 									content = Encoding.UTF8.GetBytes("Redirecting");
 								}
-								catch
+								else
 								{
-									// ignore cookie add failure
-									_logger.Log(EVerbosity.Warning, "OAuthCallback cookie failed to set");
-									statusCode = 401;
+									// Fallback: implicit-like, return token to redirect_uri
+									string redirectWithToken = AppendTokenToUrl(ds.RedirectUri!, downstreamJwt);
+									if (!string.IsNullOrWhiteSpace(ds.State))
+									{
+										redirectWithToken = AppendKeyValueToUrl(redirectWithToken, "state", ds.State!);
+									}
+									http.Response.RedirectLocation = redirectWithToken;
+									statusCode = 307;
 									contentType = "text/plain";
-									content = Encoding.UTF8.GetBytes("Cookie failure");
+									content = Encoding.UTF8.GetBytes("Redirecting");
 								}
 							}
 							else
@@ -439,10 +642,10 @@ namespace TinyLinks
 			}
 			else
 			{
-				_logger.Log(EVerbosity.Warning, $"OAuthCallback unexpected source: {http.Request.Url}");
+				_logger.Log(EVerbosity.Warning, $"OAuthCallback unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return (statusCode, contentType, content);
@@ -462,14 +665,27 @@ namespace TinyLinks
 			string contentType = "application/json";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
 				{
 					Dictionary<string, object?> doc = new Dictionary<string, object?>();
 					doc["issuer"] = baseUri.AbsoluteUri.TrimEnd('/');
+					doc["authorization_endpoint"] = new Uri(baseUri, "/api/oauth/url").AbsoluteUri; // Rule override: advertise our authorize entrypoint
+					doc["token_endpoint"] = new Uri(baseUri, "/api/oidc/token").AbsoluteUri;
 					doc["jwks_uri"] = new Uri(baseUri, "/.well-known/jwks.json").AbsoluteUri;
+					doc["response_types_supported"] = new[] { "code" };
+					doc["subject_types_supported"] = new[] { "public" };
+					doc["id_token_signing_alg_values_supported"] = new[] { "RS256" };
+					doc["scopes_supported"] = new[] { "openid", "profile", "email" };
+					doc["token_endpoint_auth_methods_supported"] = new[] { "none" };
+					doc["claims_supported"] = new[] { "iss", "sub", "aud", "exp", "iat", "email", "name", "roles" };
+					doc["code_challenge_methods_supported"] = new[] { "S256" };
+					doc["grant_types_supported"] = new[] { "authorization_code" };
 					string json = JsonSerializer.Serialize(doc);
 					statusCode = 200;
 					contentType = "application/json";
@@ -484,9 +700,10 @@ namespace TinyLinks
 			}
 			else
 			{
+				_logger.Log(EVerbosity.Warning, $"OpenIdConfiguration unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return Task.FromResult((statusCode, contentType, content));
@@ -504,7 +721,10 @@ namespace TinyLinks
 			string contentType = "application/json";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
@@ -526,15 +746,16 @@ namespace TinyLinks
 				else
 				{
 					statusCode = 405;
-					contentType = "text/plain";
+				 contentType = "text/plain";
 					content = Encoding.UTF8.GetBytes("Method Not Allowed");
 				}
 			}
 			else
 			{
+				_logger.Log(EVerbosity.Warning, $"Jwks unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return Task.FromResult((statusCode, contentType, content));
@@ -542,10 +763,10 @@ namespace TinyLinks
 
 		//-------------------
 		// Static_root file server with auto-redirect on valid session at base
-		public async Task<(int, string, byte[])> GetClient(HttpListenerContext httpListenerContext)
+		public async Task<(int, string, byte[])> GetClient(HttpListenerContext http)
 		{
-			AddCors(httpListenerContext.Request, httpListenerContext.Response, "GET, OPTIONS");
-			if (string.Equals(httpListenerContext.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
 			{
 				return (204, "text/plain", Array.Empty<byte>());
 			}
@@ -554,58 +775,27 @@ namespace TinyLinks
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? requestUri = httpListenerContext.Request.Url;
-			if (requestUri != null)
-			{
-				Uri? baseUri = GetAdvertiseBaseForRequest(requestUri);
-				if (baseUri != null)
-				{
-					string relative = requestUri.AbsoluteUri.Substring(baseUri.AbsoluteUri.Length).TrimStart('/');
-					if (string.IsNullOrEmpty(relative) || string.Equals(relative, "index.html", StringComparison.OrdinalIgnoreCase))
-					{
-						string? cookieHeader = httpListenerContext.Request.Headers["Cookie"];
-						string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
-						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out Utilities.JwtPayload? payload))
-						{
-							_logger.Log(EVerbosity.Info, $"Auto-redirecting authenticated user {payload!.sub}");
-							if (!string.IsNullOrWhiteSpace(_postLoginRedirect))
-							{
-								string redirectWithToken = AppendTokenToUrl(_postLoginRedirect!, jwt!);
-								httpListenerContext.Response.RedirectLocation = redirectWithToken;
-								statusCode = 307;
-								contentType = "text/plain";
-								content = Encoding.UTF8.GetBytes("Redirecting");
-							}
-							else
-							{
-								_logger.Log(EVerbosity.Error, "post_login_redirect not configured");
-								statusCode = 500;
-								contentType = "text/plain";
-								content = Encoding.UTF8.GetBytes("post_login_redirect not configured");
-							}
-						}
-					}
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
 
-					if (content.Length == 0)
-					{
-						(int statusCode2, string contentType2, byte[] content2) = await ServeStaticFile(_staticRootFolder, relative).ConfigureAwait(false);
-						statusCode = statusCode2;
-						contentType = contentType2;
-						content = content2;
-					}
-				}
-				else
-				{
-					statusCode = 401;
-					contentType = "text/plain";
-					content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {requestUri}");
-				}
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
+			if (baseUri != null)
+			{
+				Uri relativeUri = baseUri.MakeRelativeUri(originalRequestUri);
+				string relative = relativeUri.ToString();   // may be "path/to/thing?x=1" or just "?x=1"
+				int qIndex = relative.IndexOf('?');
+				string relativePath = qIndex >= 0 ? relative.Substring(0, qIndex) : relative;
+
+				(int statusCode2, string contentType2, byte[] content2) = await ServeStaticFile(_staticRootFolder, relativePath).ConfigureAwait(false);
+				statusCode = statusCode2;
+				contentType = contentType2;
+				content = content2;
 			}
 			else
 			{
-				statusCode = 400;
+				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes("Invalid request URL");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return (statusCode, contentType, content);
@@ -670,7 +860,10 @@ namespace TinyLinks
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
@@ -723,10 +916,10 @@ namespace TinyLinks
 			}
 			else
 			{
-				_logger.Log(EVerbosity.Warning, $"LinkCreate unexpected source: {http.Request.Url}");
+				_logger.Log(EVerbosity.Warning, $"LinkCreate unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return Task.FromResult((statusCode, contentType, content));
@@ -744,7 +937,10 @@ namespace TinyLinks
 			string contentType = "text/plain";
 			byte[] content = Array.Empty<byte>();
 
-			Uri? baseUri = http.Request.Url != null ? GetAdvertiseBaseForRequest(http.Request.Url) : null;
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
 			if (baseUri != null)
 			{
 				if (string.Equals(http.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
@@ -784,13 +980,165 @@ namespace TinyLinks
 			}
 			else
 			{
-				_logger.Log(EVerbosity.Warning, $"Unlink unexpected source: {http.Request.Url}");
+				_logger.Log(EVerbosity.Warning, $"Unlink unexpected source: {originalRequestUri.AbsoluteUri}");
 				statusCode = 401;
 				contentType = "text/plain";
-				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {http.Request.Url}");
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
 			}
 
 			return (statusCode, contentType, content);
+		}
+
+		// ---------------- OIDC Token endpoint ----------------
+		public async Task<(int, string, byte[])> Token(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "POST, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return (204, "text/plain", Array.Empty<byte>());
+			}
+
+			int statusCode = 200;
+			string contentType = "application/json";
+			byte[] content = Array.Empty<byte>();
+
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
+			if (baseUri != null)
+			{
+				if (string.Equals(http.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+				{
+					// Read form body
+					string body = string.Empty;
+					try
+					{
+						using (StreamReader sr = new StreamReader(http.Request.InputStream, http.Request.ContentEncoding))
+						{
+							body = await sr.ReadToEndAsync().ConfigureAwait(false);
+						}
+					}
+					catch {}
+
+					Dictionary<string, string> form = ParseFormUrlEncoded(body);
+					string grantType = form.ContainsKey("grant_type") ? form["grant_type"] : string.Empty;
+					string code = form.ContainsKey("code") ? form["code"] : string.Empty;
+					string redirectUri = form.ContainsKey("redirect_uri") ? form["redirect_uri"] : string.Empty;
+					string clientId = form.ContainsKey("client_id") ? form["client_id"] : string.Empty;
+					string codeVerifier = form.ContainsKey("code_verifier") ? form["code_verifier"] : string.Empty;
+
+					if (string.Equals(grantType, "authorization_code", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(code))
+					{
+						if (_authCodes.TryRemove(code, out AuthCodeRecord record) && DateTime.UtcNow <= record.Expires)
+						{
+							bool ok = true;
+							if (!string.IsNullOrWhiteSpace(record.ClientId) && !string.IsNullOrWhiteSpace(clientId))
+							{
+								ok = string.Equals(record.ClientId, clientId, StringComparison.Ordinal);
+							}
+							if (ok && !string.IsNullOrWhiteSpace(record.RedirectUri) && !string.IsNullOrWhiteSpace(redirectUri))
+							{
+								ok = string.Equals(record.RedirectUri, redirectUri, StringComparison.Ordinal);
+							}
+							if (ok && !string.IsNullOrWhiteSpace(record.CodeChallenge))
+							{
+								// Verify PKCE S256
+								if (string.Equals(record.CodeChallengeMethod ?? string.Empty, "S256", StringComparison.OrdinalIgnoreCase))
+								{
+									if (string.IsNullOrWhiteSpace(codeVerifier)==false)
+									{
+										byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
+										byte[] hash = SHA256.HashData(bytes);
+										string expected = UrlHelper.Base64UrlEncodeNoPadding(hash);
+										ok = string.Equals(expected, record.CodeChallenge, StringComparison.Ordinal);
+									}
+									else
+									{
+										ok = false;
+									}
+								}
+								else
+								{
+									ok = false;
+								}
+							}
+
+							if (ok)
+							{
+								// Build minimal token response
+								Dictionary<string, object?> resp = new Dictionary<string, object?>();
+								resp["token_type"] = "Bearer";
+								resp["expires_in"] = _sessionDurationSeconds;
+								resp["access_token"] = record.Token;
+								resp["id_token"] = record.Token;
+								string json = JsonSerializer.Serialize(resp);
+								statusCode = 200;
+								contentType = "application/json";
+								content = Encoding.UTF8.GetBytes(json);
+							}
+							else
+							{
+								statusCode = 400;
+								contentType = "application/json";
+								content = Encoding.UTF8.GetBytes("{\"error\":\"invalid_grant\"}");
+							}
+						}
+						else
+						{
+							statusCode = 400;
+							contentType = "application/json";
+							content = Encoding.UTF8.GetBytes("{\"error\":\"invalid_grant\"}");
+						}
+					}
+					else
+					{
+						statusCode = 400;
+						contentType = "application/json";
+						content = Encoding.UTF8.GetBytes("{\"error\":\"unsupported_grant_type\"}");
+					}
+				}
+				else
+				{
+					statusCode = 405;
+					contentType = "text/plain";
+					content = Encoding.UTF8.GetBytes("Method Not Allowed");
+				}
+			}
+			else
+			{
+				statusCode = 401;
+				contentType = "text/plain";
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
+			}
+
+			return (statusCode, contentType, content);
+		}
+
+		private static Dictionary<string, string> ParseFormUrlEncoded(string form)
+		{
+			Dictionary<string, string> dict = new Dictionary<string, string>(StringComparer.Ordinal);
+			if (string.IsNullOrEmpty(form))
+			{
+				return dict;
+			}
+			string[] pairs = form.Split('&');
+			for (int i = 0; i < pairs.Length; i++)
+			{
+				string p = pairs[i];
+				if (string.IsNullOrEmpty(p)) continue;
+				int eq = p.IndexOf('=');
+				if (eq <= 0)
+				{
+					string k = WebUtility.UrlDecode(p);
+					if (!dict.ContainsKey(k)) dict[k] = string.Empty;
+				}
+				else
+				{
+					string k = WebUtility.UrlDecode(p.Substring(0, eq));
+					string v = WebUtility.UrlDecode(p.Substring(eq + 1));
+					if (!dict.ContainsKey(k)) dict[k] = v;
+				}
+			}
+			return dict;
 		}
 	}
 }

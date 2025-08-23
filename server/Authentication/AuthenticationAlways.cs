@@ -26,10 +26,12 @@ namespace Authentication
 		{ 
 			public DateTime CreatedUtc   { get; } 
 			public string?  LinkCode     { get; } 
-			public AlwaysStateEntry(DateTime createdUtc, string? linkCode) 
+			public DownstreamAuthRequest Downstream { get; }
+			public AlwaysStateEntry(DateTime createdUtc, string? linkCode, DownstreamAuthRequest downstream) 
 			{ 
 				CreatedUtc   = createdUtc; 
 				LinkCode     = linkCode; 
+				Downstream   = downstream; 
 			} 
 		}
 
@@ -69,7 +71,7 @@ namespace Authentication
 
 		// Any kind of authentication system will return the statusCode, contentType, and content for the response.  It may set cookies or otherwise.
 		// Always now returns the callback URL as text to avoid fetch() redirect CORS issues.
-		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext)
+		public Task<(int, string, byte[])> StartAuthenticate(Uri baseUri, HttpListenerContext httpContext, DownstreamAuthRequest downstream)
 		{
 			try
 			{
@@ -78,11 +80,12 @@ namespace Authentication
 
 				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
 				string? linkCode = httpContext.Request.QueryString["linkcode"];
-				_alwaysStates.AddOrUpdate(state, new AlwaysStateEntry(DateTime.UtcNow, linkCode));
+				_alwaysStates.AddOrUpdate(state, new AlwaysStateEntry(DateTime.UtcNow, linkCode, downstream));
 
 				// Return the URL so the client can navigate, matching other providers' behavior.
 				string url = $"{callbackUrl}?&state={Uri.EscapeDataString(state)}";
-				return Task.FromResult<(int, string, byte[])>((200, "text/plain", Encoding.UTF8.GetBytes(url)));
+				httpContext.Response.RedirectLocation = url;
+				return Task.FromResult<(int, string, byte[])>((307, "text/plain", Encoding.UTF8.GetBytes("Redirecting")));
 			}
 			catch
 			{
@@ -104,8 +107,8 @@ namespace Authentication
 			return isMine;
 		}
 
-		// (upstreamSub, fullName, email, roles, linkcode) 
-		public Task<(string?, string?, string?, string[]?, string?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
+		// (upstreamSub, fullName, email, roles, linkcode, downstream) 
+		public Task<(string?, string?, string?, string[]?, string?, DownstreamAuthRequest?)> AuthenticateCallback(Uri baseUri, HttpListenerContext httpContext)
 		{
 			// We already verified this is the correct state and it's ours.
 			string state = httpContext.Request.QueryString["state"]!;
@@ -115,11 +118,11 @@ namespace Authentication
 				try
 				{
 					httpContext.Response.Headers.Add("Set-Cookie", $"{kAlwaysStateCookieName}=; Max-Age=0; Path=/");
-					return Task.FromResult<(string?,string?,string?,string[]?,string?)>((_sub, _fullName, _email, _roles, entry.LinkCode));
+					return Task.FromResult<(string?,string?,string?,string[]?,string?,DownstreamAuthRequest?)>((_sub, _fullName, _email, _roles, entry.LinkCode, entry.Downstream));
 				}
 				catch {}
 			}
-			return Task.FromResult<(string?,string?,string?,string[]?,string?)>((null, null, null, null, null));
+			return Task.FromResult<(string?,string?,string?,string[]?,string?,DownstreamAuthRequest?)>((null, null, null, null, null, null));
 		}
 	}
 }
