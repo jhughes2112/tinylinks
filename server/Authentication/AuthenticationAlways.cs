@@ -76,7 +76,8 @@ namespace Authentication
 			try
 			{
 				string state = UrlHelper.GenerateRandomDataBase64url(32);
-				httpContext.Response.Headers.Add("Set-Cookie", $"{kAlwaysStateCookieName}={state}; Max-Age={kAlwaysStateTtlSeconds}; Path=/; HttpOnly");
+				bool secure = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+				httpContext.Response.Headers.Add("Set-Cookie", UrlHelper.BuildSetCookie(kAlwaysStateCookieName, state, kAlwaysStateTtlSeconds, "/", true, secure));
 
 				string callbackUrl = new Uri(baseUri, "/api/oauth/callback").AbsoluteUri;
 				string? linkCode = httpContext.Request.QueryString["linkcode"];
@@ -117,7 +118,8 @@ namespace Authentication
 				// wipe out that cookie
 				try
 				{
-					httpContext.Response.Headers.Add("Set-Cookie", $"{kAlwaysStateCookieName}=; Max-Age=0; Path=/");
+					bool secure = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+					httpContext.Response.Headers.Add("Set-Cookie", UrlHelper.BuildSetCookie(kAlwaysStateCookieName, string.Empty, 0, "/", true, secure));
 					return Task.FromResult<(string?,string?,string?,string[]?,string?,DownstreamAuthRequest?)>((_sub, _fullName, _email, _roles, entry.LinkCode, entry.Downstream));
 				}
 				catch {}

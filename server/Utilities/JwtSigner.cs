@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Logging;
 using Shared;
 
 namespace Utilities
@@ -12,9 +15,55 @@ namespace Utilities
 		private readonly RSA _rsa;
 		private readonly string _kid;
 
-		public JwtSigner()
+		// Loads the RSA signing key from keyFilePath if it exists, otherwise generates a fresh key and persists it (PKCS#8 PEM).
+		// Persisting the key keeps sessions/JWKS stable across restarts, and lets multiple instances share one signing key.
+		// If keyFilePath is null/empty, the key is ephemeral (regenerated every start) - fine for single-instance dev only.
+		public JwtSigner(string? keyFilePath, ILogging logger)
 		{
-			_rsa = RSA.Create(2048);
+			RSA? loaded = null;
+			if (!string.IsNullOrWhiteSpace(keyFilePath) && File.Exists(keyFilePath))
+			{
+				try
+				{
+					RSA rsa = RSA.Create();
+					rsa.ImportFromPem(File.ReadAllText(keyFilePath));
+					loaded = rsa;
+					logger.Log(EVerbosity.Info, $"JwtSigner loaded signing key from {keyFilePath}");
+				}
+				catch (Exception e)
+				{
+					logger.Log(EVerbosity.Error, $"JwtSigner failed to load key from {keyFilePath}, generating a new one: {e.Message}");
+				}
+			}
+
+			if (loaded == null)
+			{
+				loaded = RSA.Create(2048);
+				if (!string.IsNullOrWhiteSpace(keyFilePath))
+				{
+					try
+					{
+						string? dir = Path.GetDirectoryName(Path.GetFullPath(keyFilePath));
+						if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+						File.WriteAllText(keyFilePath, loaded.ExportPkcs8PrivateKeyPem());
+						if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+						{
+							try { File.SetUnixFileMode(keyFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { }
+						}
+						logger.Log(EVerbosity.Info, $"JwtSigner generated and persisted a new signing key at {keyFilePath}");
+					}
+					catch (Exception e)
+					{
+						logger.Log(EVerbosity.Error, $"JwtSigner could not persist signing key to {keyFilePath}: {e.Message}");
+					}
+				}
+				else
+				{
+					logger.Log(EVerbosity.Warning, "JwtSigner using an ephemeral signing key (no --jwt_key_file); sessions will not survive a restart.");
+				}
+			}
+
+			_rsa = loaded;
 			RSAParameters p = _rsa.ExportParameters(false);
 			using var sha = SHA256.Create();
 			byte[] hash = sha.ComputeHash(p.Modulus!);
@@ -47,7 +96,7 @@ namespace Utilities
 		}
 
 		// Helper to mint with an explicit full sub (used for link override)
-		public string CreateServerJWT(Uri issuerBase, string sub, string? email, string[]? roles, long exp)
+		public string CreateServerJWT(Uri issuerBase, string sub, string? email, string[]? roles, long exp, string? aud, string? nonce)
 		{
 			long iat = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 			var claims = new Dictionary<string, object?>
@@ -59,18 +108,9 @@ namespace Utilities
 				{"email", email},
 				{"roles", roles ?? Array.Empty<string>()}
 			};
+			if (!string.IsNullOrEmpty(aud))   claims["aud"]   = aud;
+			if (!string.IsNullOrEmpty(nonce)) claims["nonce"] = nonce;
 			return CreateToken(claims, issuerBase.AbsoluteUri.TrimEnd('/'));
-		}
-
-		// Validate signature and return payload JSON
-		public bool TryValidate(string token, out string payloadJson)
-		{
-			payloadJson = string.Empty;
-			try
-			{
-				return true;
-			}
-			catch { return false; }
 		}
 
 		// Validate and parse into a typed payload object

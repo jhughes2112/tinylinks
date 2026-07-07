@@ -58,6 +58,21 @@ namespace Shared
 			return Convert.FromBase64String(output);
 		}
 
+		// Builds a Set-Cookie header value with consistent security attributes.
+		// SameSite=Lax works for the OAuth redirect flow because the provider/callback hops are top-level GET navigations.
+		// Secure is only emitted for https so http://localhost development still works.
+		static public string BuildSetCookie(string name, string value, int maxAgeSeconds, string path, bool httpOnly, bool secure)
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.Append(name).Append('=').Append(value);
+			sb.Append("; Max-Age=").Append(maxAgeSeconds);
+			sb.Append("; Path=").Append(path);
+			sb.Append("; SameSite=Lax");
+			if (httpOnly) sb.Append("; HttpOnly");
+			if (secure)   sb.Append("; Secure");
+			return sb.ToString();
+		}
+
 		// Finds the desired cookie and returns the value it was set to.
 		static public string? ExtractCookie(string? cookieHeader, string cookieName)
 		{

@@ -41,6 +41,10 @@ docker run -p 17777:17777 \
 	--static_root static_root \
 	--session_duration 3600 \
 	--linkcreate_secret somesecret \
+	--jwt_key_file /data/jwt_signing_key.pem \
+	--client_config \
+		myapp,https://myapp.example.com/oidc/callback \
+		otherapp,https://other.example.com/callback,https://other.example.com/callback2 \
 	--auth_config \
 		openid,google,<yourclientid>,<clientsecret> \
 		always \
@@ -61,8 +65,10 @@ TinyLinks is configured entirely via command line options:
 | `--conn_bindurl`      | No       | `http://+:17777/`         | Bind address for the webserver. `/health` and `/metrics` always available here.  Can include subpaths.                   |
 | `--storage_config`    | Yes      | —                         | Path for dynamic storage. When a tinylink is used, a tiny file is written that indicates the masqueraded account id.     |
 | `--auth_config`       | Yes      | —                         | Upstream OAuth providers. Multiple providers can be specified separated by spaces.                                       |
+| `--client_config`     | Yes      | —                         | Allowlist of downstream OIDC clients. Repeat/space-separate entries. Each: `clientid,redirecturi[,redirecturi...]` with **exact-match** redirect URIs. An authorize request whose `client_id`/`redirect_uri` isn't registered is rejected. |
 | `--session_duration`  | No       | `3600`                    | JWT cookie duration in seconds before re-login through upstreams is required.                                            |
 | `--linkcreate_secret` | Yes      | —                         | Secret required to generate masquerade links. When prompted by user, your server makes this call, displays code to user. |
+| `--jwt_key_file`      | No       | `/data/jwt_signing_key.pem` | Path to the RSA signing key (PKCS#8 PEM). Created on first run if absent; reused afterward so sessions/JWKS survive restarts and can be shared across instances. Defaults to `<storage>/jwt_signing_key.pem`. |
 | `--advertise_urls`    | Yes      | `http://localhost:17777/` | Comma-separated URLs the server should recognize as its public base. Can include subpaths.                               |
 | `--static_root`       | No       | `/app/static_root`        | Path to static client files (e.g. index.html with login buttons).                                                        |
 
@@ -84,10 +90,10 @@ TinyLinks exposes the following endpoints:
 
 * **OAuth Flow**
 
-  * `/api/oauth/url` — Downstream authorize endpoint.  You call this with the typical complement of query parameters (state, redirect_url, and so on).  Will not work if you skip this step.
-  * `/api/oauth/upstream` — Buttons on the HTML page use this to start upstream provider flow (`?provider=google`).
+  * `/api/oauth/url` — Downstream authorize endpoint. Call this with the standard OAuth2 params (`client_id`, `redirect_uri`, `response_type=code`, `state`, `code_challenge`, `code_challenge_method=S256`, optional `nonce`). Will not work if you skip this step. **PKCE is mandatory** and only `response_type=code` is supported. The `client_id`/`redirect_uri` pair must be registered via `--client_config` or the request is rejected with `400`.
+  * `/api/oauth/upstream` — Buttons on the HTML page use this to start upstream provider flow (`?provider=google`). Enforces the same client/redirect/PKCE validation.
   * `/api/oauth/callback` — Provider callback.
-  * `/api/oidc/token` — Token exchange endpoint (supports PKCE).
+  * `/api/oidc/token` — Token exchange endpoint. Requires PKCE `code_verifier` and the same `client_id`/`redirect_uri` used at authorize time; returns an RS256 JWT (with `aud`/`nonce` claims) as both `access_token` and `id_token`.
 
 * **Masquerading**
 

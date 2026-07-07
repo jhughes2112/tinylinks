@@ -87,7 +87,8 @@ namespace Authentication
 			try
 			{
 				string state = UrlHelper.GenerateRandomDataBase64url(32);
-				httpContext.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}={state}; Max-Age={kOAuthStateTtlSeconds}; Path=/; HttpOnly");
+				bool secure = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+				httpContext.Response.Headers.Add("Set-Cookie", UrlHelper.BuildSetCookie(kOAuthStateCookieName, state, kOAuthStateTtlSeconds, "/", true, secure));
 
 				string codeVerifier = UrlHelper.GenerateRandomDataBase64url(64);
 				byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
@@ -131,7 +132,8 @@ namespace Authentication
 				// wipe out that cookie
 				try
 				{
-					httpContext.Response.Headers.Add("Set-Cookie", $"{kOAuthStateCookieName}=; Max-Age=0; Path=/");
+					bool secure = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+					httpContext.Response.Headers.Add("Set-Cookie", UrlHelper.BuildSetCookie(kOAuthStateCookieName, string.Empty, 0, "/", true, secure));
 
 					string? code = httpContext.Request.QueryString["code"];
 					if (string.IsNullOrWhiteSpace(code)==false)

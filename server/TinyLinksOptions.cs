@@ -36,6 +36,17 @@ namespace TinyLinks
 		public string? linkcreate_secret { get; set; }
 
 		//-------------------
+		// Downstream OIDC clients (allowlist). Repeat option to add more.
+		// Each: "clientid,redirecturi1,redirecturi2,..." with exact-match redirect URIs.
+		[Option("client_config", Required = true, HelpText = "Allowed downstream OIDC clients. Repeat option to add more. Each: clientid,redirecturi[,redirecturi...]")]
+		public IEnumerable<string>? client_config { get; set; }
+
+		//-------------------
+		// RSA signing key persistence. If empty, a key file is created under the storage folder on first run.
+		[Option("jwt_key_file", Required = false, Default = "", HelpText = "Path to the RSA signing key (PKCS#8 PEM). Created on first run if absent. Defaults to <storage>/jwt_signing_key.pem.")]
+		public string? jwt_key_file { get; set; }
+
+		//-------------------
 		// Static content and hosting
 		[Option("advertise_urls", Required = true, Default = "http://localhost:7777/", HelpText = "Comma-separated list of URLs that requests should look like to the server. Example: 'http://localhost:7777/,https://example.com:8080/wiki/'")]
 		public string? advertise_urls { get; set; }

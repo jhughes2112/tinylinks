@@ -29,7 +29,9 @@ namespace TinyLinks
 		private Task                           _updateThread                = Task.CompletedTask;
 		private CancellationTokenSource        _cancellationTokenSrc;
 		private CancellationTokenSource?       _cancellationTokenSrcUpdate;
-		private readonly JwtSigner             _jwt = new JwtSigner();      // Server JWT signer (RS256) for downstream cookies and JWKS
+		private readonly JwtSigner             _jwt;                        // Server JWT signer (RS256) for downstream cookies and JWKS
+		private readonly ClientRegistry        _clientRegistry;            // allowlist of downstream OIDC clients + redirect URIs
+		private readonly HashSet<string>       _allowedCorsOrigins;        // origins derived from advertise urls
 
 		private readonly List<IAuthentication> _authProviders;
 		private int                            _sessionDurationSeconds      = 3600; // 1 hour session cookie
@@ -82,7 +84,7 @@ namespace TinyLinks
 		// In-memory, storage for downstream authorization codes
 		private readonly ThreadSafeDictionary<string, AuthCodeRecord>  _authCodes = new ThreadSafeDictionary<string, AuthCodeRecord>();
 
-		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage)
+		public TinyLinksServer(List<string> advertiseUrls, string staticRootFolder, IDataCollection dataCollection, ILogging logger, CancellationTokenSource tokenSrc, IEnumerable<IAuthentication> authentications, int sessionDurationSeconds, string linkcreateSecret, StorageFiles linksStorage, ClientRegistry clientRegistry, string jwtKeyFile)
 		{
 			_advertiseUrls           = advertiseUrls;
 			_staticRootFolder        = staticRootFolder;
@@ -93,9 +95,22 @@ namespace TinyLinks
 			_sessionDurationSeconds  = sessionDurationSeconds;
 			_linkcreateSecret        = linkcreateSecret;
 			_linksStorage            = linksStorage;
+			_clientRegistry          = clientRegistry;
+			_jwt                     = new JwtSigner(jwtKeyFile, logger);
 
 			if (string.IsNullOrWhiteSpace(staticRootFolder) || string.IsNullOrWhiteSpace(_linkcreateSecret) || _authProviders.Count==0)
 				throw new ArgumentException("TinyLinksStorage has missing, empty, or null configuration fields");
+
+			if (_clientRegistry == null || _clientRegistry.Count == 0)
+				throw new ArgumentException("TinyLinksServer requires at least one --client_config entry");
+
+			// Precompute the set of origins (scheme://host[:port]) that we will echo back for CORS.
+			_allowedCorsOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			for (int i = 0; i < _advertiseUrls.Count; i++)
+			{
+				if (Uri.TryCreate(_advertiseUrls[i], UriKind.Absolute, out Uri? u))
+					_allowedCorsOrigins.Add(u.GetLeftPart(UriPartial.Authority));
+			}
 
 			_logger.Log(EVerbosity.Info, $"Server initializing.");
 
@@ -193,6 +208,11 @@ namespace TinyLinks
 				{
 					// flow control
 				}
+				catch (Exception e)
+				{
+					// Never let a transient error kill the cleanup loop for the life of the process.
+					_logger.Log(EVerbosity.Error, $"Server.Update loop caught exception, continuing: {e}");
+				}
 			}
 			_logger.Log(EVerbosity.Info, $"Server.Update exiting.");
 		}
@@ -228,13 +248,6 @@ namespace TinyLinks
 			{
 				result = false;
 			}
-			return result;
-		}
-
-		private static string AppendTokenToUrl(string baseUrl, string token)
-		{
-			string sep = baseUrl.Contains("?") ? "&" : "?";
-			string result = baseUrl + sep + "token=" + Uri.EscapeDataString(token);
 			return result;
 		}
 
@@ -298,11 +311,13 @@ namespace TinyLinks
 			return "tl_login_success_provider_" + providerSanitized;
 		}
 
-		// Add CORS headers for cross-origin requests
-		private static void AddCors(HttpListenerRequest request, HttpListenerResponse response, string allowedMethods)
+		// Add CORS headers for cross-origin requests.
+		// We only reflect the Origin (and allow credentials) when it is one of our own advertise origins;
+		// reflecting arbitrary origins with Allow-Credentials=true would let any site make credentialed calls.
+		private void AddCors(HttpListenerRequest request, HttpListenerResponse response, string allowedMethods)
 		{
 			string? origin = request.Headers["Origin"];
-			if (!string.IsNullOrEmpty(origin))
+			if (!string.IsNullOrEmpty(origin) && _allowedCorsOrigins.Contains(origin))
 			{
 				response.Headers["Access-Control-Allow-Origin"] = origin;
 				response.Headers["Vary"] = "Origin";
@@ -311,6 +326,54 @@ namespace TinyLinks
 				response.Headers["Access-Control-Allow-Methods"] = allowedMethods;
 				response.Headers["Access-Control-Max-Age"] = "600";
 			}
+		}
+
+		// Validate a downstream OIDC authorize request before we act on it. Returns null on success, or an error message.
+		// This is what closes the open-redirect / token-exfiltration hole: an unregistered client or a redirect_uri that
+		// is not on that client's allowlist is rejected outright, and PKCE (S256) is mandatory.
+		private string? ValidateDownstreamRequest(DownstreamAuthRequest ds)
+		{
+			if (!string.Equals(ds.ResponseType ?? "code", "code", StringComparison.OrdinalIgnoreCase))
+				return "unsupported response_type (only 'code' is supported)";
+			if (string.IsNullOrWhiteSpace(ds.ClientId))
+				return "client_id required";
+			if (string.IsNullOrWhiteSpace(ds.RedirectUri))
+				return "redirect_uri required";
+			if (!_clientRegistry.IsAllowed(ds.ClientId, ds.RedirectUri))
+				return "client_id / redirect_uri not registered";
+			if (string.IsNullOrWhiteSpace(ds.CodeChallenge))
+				return "code_challenge required (PKCE)";
+			if (!string.Equals(ds.CodeChallengeMethod ?? string.Empty, "S256", StringComparison.OrdinalIgnoreCase))
+				return "code_challenge_method must be S256";
+			return null;
+		}
+
+		// Reads all the downstream OIDC params off the query string.
+		private static DownstreamAuthRequest ParseDownstream(HttpListenerRequest request)
+		{
+			DownstreamAuthRequest ds = new DownstreamAuthRequest();
+			ds.ResponseType        = request.QueryString["response_type"] ?? "code";
+			ds.Scope               = request.QueryString["scope"];
+			ds.RedirectUri         = request.QueryString["redirect_uri"];
+			ds.ClientId            = request.QueryString["client_id"];
+			ds.State               = request.QueryString["state"];
+			ds.CodeChallenge       = request.QueryString["code_challenge"];
+			ds.CodeChallengeMethod = request.QueryString["code_challenge_method"];
+			ds.Nonce               = request.QueryString["nonce"];
+			return ds;
+		}
+
+		// Strong, single-use authorization code. Unlike the human-typed link codes, these ride in machine-to-machine
+		// redirects, so they are full-entropy and stored with Add so a (practically impossible) collision fails closed.
+		private string CreateAuthCode(AuthCodeRecord record)
+		{
+			for (int i = 0; i < 5; i++)
+			{
+				string candidate = UrlHelper.GenerateRandomDataBase64url(32);
+				if (_authCodes.Add(candidate, record))
+					return candidate;
+			}
+			throw new InvalidOperationException("Failed to allocate a unique authorization code");
 		}
 
 		// ---------------- OAuth endpoints ----------------
@@ -334,59 +397,47 @@ namespace TinyLinks
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
 				{
-					// Parse downstream request params
-					DownstreamAuthRequest ds = new DownstreamAuthRequest();
-					ds.ResponseType = http.Request.QueryString["response_type"] ?? "code";
-					ds.Scope = http.Request.QueryString["scope"];
-					ds.RedirectUri = http.Request.QueryString["redirect_uri"];
-					ds.ClientId = http.Request.QueryString["client_id"];
-					ds.State = http.Request.QueryString["state"];
-					ds.CodeChallenge = http.Request.QueryString["code_challenge"];
-					ds.CodeChallengeMethod = http.Request.QueryString["code_challenge_method"];
-
-					// Require redirect_uri for this flow
-					if (string.IsNullOrWhiteSpace(ds.RedirectUri)==false)
+					// Parse and validate the downstream request BEFORE any redirect. Errors are returned directly
+					// (never redirected to a possibly-untrusted redirect_uri).
+					DownstreamAuthRequest ds = ParseDownstream(http.Request);
+					string? validationError = ValidateDownstreamRequest(ds);
+					if (validationError != null)
+					{
+						_logger.Log(EVerbosity.Warning, $"OAuthUrl rejected: {validationError}");
+						statusCode = 400;
+						contentType = "text/plain";
+						content = Encoding.UTF8.GetBytes(validationError);
+					}
+					else
 					{
 						// If we already have a valid downstream session cookie, short-circuit and redirect back to client
 						string? cookieHeader = http.Request.Headers["Cookie"];
 						string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
 						Utilities.JwtPayload? payload;
-						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null)
+						if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
 						{
-							if (string.Equals(ds.ResponseType ?? "code", "code", StringComparison.OrdinalIgnoreCase))
-							{
-								string authCode = Guid.NewGuid().ToString().Split('-')[0];
-								DateTime expires = DateTime.UtcNow.AddSeconds(300);
-								_authCodes.AddOrUpdate(authCode, new AuthCodeRecord(
-									jwt!,
-									ds.ClientId ?? string.Empty,
-									ds.RedirectUri!,
-									ds.CodeChallenge,
-									ds.CodeChallengeMethod,
-									expires));
+							// Mint a fresh token bound to this client (aud) and nonce, rather than replaying the old cookie value.
+							long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+							long exp = now + _sessionDurationSeconds;
+							string clientToken = _jwt.CreateServerJWT(baseUri, payload.sub!, payload.email, payload.roles, exp, ds.ClientId, ds.Nonce);
 
-								string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
-								if (!string.IsNullOrWhiteSpace(ds.State))
-								{
-									redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
-								}
-								http.Response.RedirectLocation = redirectUrl;
-								statusCode = 307;
-								contentType = "text/plain";
-								content = Encoding.UTF8.GetBytes("Redirecting");
-							}
-							else
+							string authCode = CreateAuthCode(new AuthCodeRecord(
+								clientToken,
+								ds.ClientId ?? string.Empty,
+								ds.RedirectUri!,
+								ds.CodeChallenge,
+								ds.CodeChallengeMethod,
+								DateTime.UtcNow.AddSeconds(300)));
+
+							string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
+							if (!string.IsNullOrWhiteSpace(ds.State))
 							{
-								string redirectWithToken = AppendTokenToUrl(ds.RedirectUri!, jwt!);
-								if (!string.IsNullOrWhiteSpace(ds.State))
-								{
-									redirectWithToken = AppendKeyValueToUrl(redirectWithToken, "state", ds.State!);
-								}
-								http.Response.RedirectLocation = redirectWithToken;
-								statusCode = 307;
-								contentType = "text/plain";
-								content = Encoding.UTF8.GetBytes("Redirecting");
+								redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
 							}
+							http.Response.RedirectLocation = redirectUrl;
+							statusCode = 307;
+							contentType = "text/plain";
+							content = Encoding.UTF8.GetBytes("Redirecting");
 						}
 						else
 						{
@@ -399,12 +450,6 @@ namespace TinyLinks
 							contentType = "text/plain";
 							content = Encoding.UTF8.GetBytes("Redirecting");
 						}
-					}
-					else
-					{
-						statusCode = 500; // Rule override: enforce redirect_uri presence at authorize time
-						contentType = "text/plain";
-						content = Encoding.UTF8.GetBytes("redirect_uri required");
 					}
 				}
 				else
@@ -445,17 +490,20 @@ namespace TinyLinks
 			{
 				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
 				{
-					DownstreamAuthRequest ds = new DownstreamAuthRequest();
-					ds.ResponseType = http.Request.QueryString["response_type"] ?? "code";
-					ds.Scope = http.Request.QueryString["scope"];
-					ds.RedirectUri = http.Request.QueryString["redirect_uri"];
-					ds.ClientId = http.Request.QueryString["client_id"];
-					ds.State = http.Request.QueryString["state"];
-					ds.CodeChallenge = http.Request.QueryString["code_challenge"];
-					ds.CodeChallengeMethod = http.Request.QueryString["code_challenge_method"];
+					DownstreamAuthRequest ds = ParseDownstream(http.Request);
 
+					// Same validation as the authorize endpoint: reject unknown clients / redirect URIs and enforce PKCE
+					// before we ever start an upstream provider flow.
+					string? validationError = ValidateDownstreamRequest(ds);
 					string? provider = http.Request.QueryString["provider"];
-					if (!string.IsNullOrWhiteSpace(provider))
+					if (validationError != null)
+					{
+						_logger.Log(EVerbosity.Warning, $"OAuthUpstream rejected: {validationError}");
+						statusCode = 400;
+						contentType = "text/plain";
+						content = Encoding.UTF8.GetBytes(validationError);
+					}
+					else if (!string.IsNullOrWhiteSpace(provider))
 					{
 						IAuthentication? auth = _authProviders.Find(p => string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
 						if (auth != null)
@@ -545,9 +593,21 @@ namespace TinyLinks
 									}
 								}
 
+								// Defense-in-depth: the downstream request was validated when the flow started, but make sure a
+								// buggy/loose provider can't get us to mint a code for an unregistered client/redirect.
+								string? dsError = ValidateDownstreamRequest(ds);
+								if (dsError != null)
+								{
+									_logger.Log(EVerbosity.Warning, $"OAuthCallback rejected downstream request: {dsError}");
+									statusCode = 400;
+									contentType = "text/plain";
+									content = Encoding.UTF8.GetBytes(dsError);
+									break;
+								}
+
 								// See if this login has an override sub, and if so, be that account instead.  If not, use the downstreamSub as is.
 								string finalSub = await TryGetOverrideSub(downstreamSub).ConfigureAwait(false) ?? downstreamSub;
-								string downstreamJwt = _jwt.CreateServerJWT(baseUri, finalSub, email, roles, exp);
+								string downstreamJwt = _jwt.CreateServerJWT(baseUri, finalSub, email, roles, exp, ds.ClientId, ds.Nonce);
 
 								// Log success and masquerade status
 								if (string.Equals(finalSub, downstreamSub, StringComparison.Ordinal))
@@ -565,54 +625,35 @@ namespace TinyLinks
 								string provCounter = GetProviderSuccessCounterName(provSan);
 								_dataCollection.IncrementCounter(provCounter, 1);
 
-								// Use downstream OIDC params to decide redirect target and code/token behavior
 								// Try to set a cookie with the downstream JWT so we can skip this up until the session timeout
 								try
 								{
-									http.Response.Headers.Add("Set-Cookie", $"{kDownstreamSessionCookieName}={downstreamJwt}; Max-Age={_sessionDurationSeconds}; Path=/; HttpOnly");
+									bool secure = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
+									http.Response.Headers.Add("Set-Cookie", UrlHelper.BuildSetCookie(kDownstreamSessionCookieName, downstreamJwt, _sessionDurationSeconds, "/", true, secure));
 								}
 								catch
 								{
 									_logger.Log(EVerbosity.Warning, "OAuthCallback cookie failed to set");
 								}
 
-								string responseType = ds.ResponseType ?? "code";
-								if (string.Equals(responseType, "code", StringComparison.OrdinalIgnoreCase))
-								{
-									// Issue short-lived authorization code for token exchange
-									string authCode = Guid.NewGuid().ToString().Split('-')[0];
-									DateTime expires = DateTime.UtcNow.AddSeconds(300);
-									_authCodes.AddOrUpdate(authCode, new AuthCodeRecord(
-										downstreamJwt,
-										ds.ClientId ?? string.Empty,
-										ds.RedirectUri!,
-										ds.CodeChallenge,
-										ds.CodeChallengeMethod,
-										expires));
+								// Authorization-code flow only (implicit/token flow removed to avoid leaking tokens in URLs).
+								string authCode = CreateAuthCode(new AuthCodeRecord(
+									downstreamJwt,
+									ds.ClientId ?? string.Empty,
+									ds.RedirectUri!,
+									ds.CodeChallenge,
+									ds.CodeChallengeMethod,
+									DateTime.UtcNow.AddSeconds(300)));
 
-									string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
-									if (!string.IsNullOrWhiteSpace(ds.State))
-									{
-										redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
-									}
-									http.Response.RedirectLocation = redirectUrl;
-									statusCode = 307;
-									contentType = "text/plain";
-									content = Encoding.UTF8.GetBytes("Redirecting");
-								}
-								else
+								string redirectUrl = AppendKeyValueToUrl(ds.RedirectUri!, "code", authCode);
+								if (!string.IsNullOrWhiteSpace(ds.State))
 								{
-									// Fallback: implicit-like, return token to redirect_uri
-									string redirectWithToken = AppendTokenToUrl(ds.RedirectUri!, downstreamJwt);
-									if (!string.IsNullOrWhiteSpace(ds.State))
-									{
-										redirectWithToken = AppendKeyValueToUrl(redirectWithToken, "state", ds.State!);
-									}
-									http.Response.RedirectLocation = redirectWithToken;
-									statusCode = 307;
-									contentType = "text/plain";
-									content = Encoding.UTF8.GetBytes("Redirecting");
+									redirectUrl = AppendKeyValueToUrl(redirectUrl, "state", ds.State!);
 								}
+								http.Response.RedirectLocation = redirectUrl;
+								statusCode = 307;
+								contentType = "text/plain";
+								content = Encoding.UTF8.GetBytes("Redirecting");
 							}
 							else
 							{
@@ -817,9 +858,9 @@ namespace TinyLinks
 
 			string fullPath = Path.Combine(staticRoot, relativePath);
 			string fullPathNormalized = Path.GetFullPath(fullPath);
-			string staticRootNormalized = Path.GetFullPath(staticRoot);
+			string staticRootNormalized = Path.GetFullPath(staticRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
-			if (!fullPathNormalized.StartsWith(staticRootNormalized))
+			if (!fullPathNormalized.StartsWith(staticRootNormalized, StringComparison.Ordinal))
 			{
 				statusCode = 403;
 				contentType = "text/plain";
@@ -871,9 +912,11 @@ namespace TinyLinks
 					// Count total link create calls
 					_dataCollection.IncrementCounter(kCounterLinkCreateCalls, 1);
 
-					// Require secret on query line
+					// Require secret on query line (constant-time compare to avoid leaking it via timing)
 					string? providedSecret = http.Request.QueryString["secret"];
-					if (string.IsNullOrWhiteSpace(providedSecret) || string.Equals(providedSecret, _linkcreateSecret, StringComparison.Ordinal) == false)
+					bool secretOk = !string.IsNullOrWhiteSpace(providedSecret)
+						&& CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(providedSecret), Encoding.UTF8.GetBytes(_linkcreateSecret));
+					if (!secretOk)
 					{
 						_logger.Log(EVerbosity.Warning, "LinkCreate Unauthorized (missing or invalid secret)");
 						statusCode = 401;
@@ -1030,31 +1073,22 @@ namespace TinyLinks
 					{
 						if (_authCodes.TryRemove(code, out AuthCodeRecord record) && DateTime.UtcNow <= record.Expires)
 						{
-							bool ok = true;
-							if (!string.IsNullOrWhiteSpace(record.ClientId) && !string.IsNullOrWhiteSpace(clientId))
+							// Bind the exchange unconditionally to the code's client_id and redirect_uri. Skipping these when
+							// the caller simply omits the field would let a stolen code be redeemed by anyone.
+							bool ok = string.Equals(record.ClientId, clientId, StringComparison.Ordinal)
+							       && string.Equals(record.RedirectUri, redirectUri, StringComparison.Ordinal);
+
+							// PKCE is mandatory: every code is issued with an S256 challenge, so a verifier must match it.
+							if (ok)
 							{
-								ok = string.Equals(record.ClientId, clientId, StringComparison.Ordinal);
-							}
-							if (ok && !string.IsNullOrWhiteSpace(record.RedirectUri) && !string.IsNullOrWhiteSpace(redirectUri))
-							{
-								ok = string.Equals(record.RedirectUri, redirectUri, StringComparison.Ordinal);
-							}
-							if (ok && !string.IsNullOrWhiteSpace(record.CodeChallenge))
-							{
-								// Verify PKCE S256
-								if (string.Equals(record.CodeChallengeMethod ?? string.Empty, "S256", StringComparison.OrdinalIgnoreCase))
+								if (string.Equals(record.CodeChallengeMethod ?? string.Empty, "S256", StringComparison.OrdinalIgnoreCase)
+								 && !string.IsNullOrWhiteSpace(record.CodeChallenge)
+								 && !string.IsNullOrWhiteSpace(codeVerifier))
 								{
-									if (string.IsNullOrWhiteSpace(codeVerifier)==false)
-									{
-										byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
-										byte[] hash = SHA256.HashData(bytes);
-										string expected = UrlHelper.Base64UrlEncodeNoPadding(hash);
-										ok = string.Equals(expected, record.CodeChallenge, StringComparison.Ordinal);
-									}
-									else
-									{
-										ok = false;
-									}
+									byte[] bytes = Encoding.ASCII.GetBytes(codeVerifier);
+									byte[] hash = SHA256.HashData(bytes);
+									string expected = UrlHelper.Base64UrlEncodeNoPadding(hash);
+									ok = CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(record.CodeChallenge!));
 								}
 								else
 								{

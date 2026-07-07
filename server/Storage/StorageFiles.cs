@@ -36,7 +36,7 @@ namespace Storage
 		public Task<byte[]?> Read(string key)
 		{
 			string filename = GetFullPath(key);
-			if (filename.StartsWith(_dataFolder, StringComparison.OrdinalIgnoreCase))
+			if (IsWithinDataFolder(filename))
 			{
 				for (int i = 0; i < 10;)  // if we have 10 exceptions, this isn't going to fix itself.
 				{
@@ -84,7 +84,7 @@ namespace Storage
 		public Task<byte[]?> ReadPartial(string key, int offset, int maxLength)
 		{
 			string filename = GetFullPath(key);
-			if (filename.StartsWith(_dataFolder, StringComparison.OrdinalIgnoreCase))
+			if (IsWithinDataFolder(filename))
 			{
 				for (int i = 0; i < 10;)  // if we have 10 exceptions, this isn't going to fix itself.
 				{
@@ -148,7 +148,7 @@ namespace Storage
 		public async Task<bool> Write(string key, byte[] data)
 		{
 			string filename = GetFullPath(key);
-			if (filename.StartsWith(_dataFolder, StringComparison.OrdinalIgnoreCase))
+			if (IsWithinDataFolder(filename))
 			{
 				string? subfolder = Path.GetDirectoryName(filename);
 				if (subfolder!=null && Directory.Exists(subfolder)==false)  // automatically make folders as needed to hold files.
@@ -196,7 +196,7 @@ namespace Storage
 		{
 			string filename = GetFullPath(key);
 			bool deleted = false;
-			if (filename.StartsWith(_dataFolder, StringComparison.OrdinalIgnoreCase))
+			if (IsWithinDataFolder(filename))
 			{
 				if (File.Exists(filename))
 				{
@@ -257,6 +257,15 @@ namespace Storage
 			return fullPath;
 		}
 
+		// True only when fullPath is the data folder itself or a descendant of it (separator boundary avoids
+		// matching sibling folders like "<root>_backup").
+		private bool IsWithinDataFolder(string fullPath)
+		{
+			string root = _dataFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			return fullPath.Equals(root, StringComparison.OrdinalIgnoreCase)
+				|| fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+		}
+
 		// Get file information including size and last modified time without reading the entire file
 		public Task<(long size, long lastModified)> GetFileInfo(string key)
 		{
@@ -264,7 +273,7 @@ namespace Storage
 			long lastModified = 0;
 
 			string filename = GetFullPath(key);
-			if (filename.StartsWith(_dataFolder, StringComparison.OrdinalIgnoreCase))
+			if (IsWithinDataFolder(filename))
 			{
 				try
 				{

@@ -67,9 +67,17 @@ namespace TinyLinks
 				linksStorage = new StorageFiles(o.storage_config!, logger);  // data is stored where directed by the command line option
 				List<string> advertiseUrls = GetAdvertiseUrls(o.advertise_urls!);
 
+				// Allowlist of downstream OIDC clients + their redirect URIs
+				ClientRegistry clientRegistry = new ClientRegistry(o.client_config!);
+
+				// Where to persist the RSA signing key so sessions/JWKS survive restarts and scale-out; default under storage folder.
+				string jwtKeyFile = string.IsNullOrWhiteSpace(o.jwt_key_file)
+					? System.IO.Path.Combine(System.IO.Path.GetFullPath(o.storage_config!), "jwt_signing_key.pem")
+					: o.jwt_key_file!;
+
 				// The reason this takes in a CancellationTokenSource is Docker/someone may hit ^C and want to shutdown the server.
 				// The reason we explicitly call Shutdown is the server itself may exit for other reasons, and we need to make sure it shuts down in either case.
-				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.session_duration, o.linkcreate_secret!, linksStorage!);
+				server = new TinyLinksServer(advertiseUrls, o.static_root!, dataCollection, logger, tokenSrc, authentications, o.session_duration, o.linkcreate_secret!, linksStorage!, clientRegistry, jwtKeyFile);
 
 				// Set up a websocket handler that forwards connections, disconnections, and messages to the ClusterServer
 				ConnectionManagerReject connectionMgr = new ConnectionManagerReject(logger);

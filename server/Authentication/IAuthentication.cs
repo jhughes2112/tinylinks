@@ -14,6 +14,7 @@ namespace Authentication
 		public string? State { get; set; }
 		public string? CodeChallenge { get; set; }
 		public string? CodeChallengeMethod { get; set; }
+		public string? Nonce { get; set; }
 	}
 
 	// This allows us to have pluggable account authentication and OIDC provider flows.
