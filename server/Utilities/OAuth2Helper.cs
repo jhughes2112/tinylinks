@@ -38,7 +38,7 @@ namespace Authentication
 						try
 						{
 							string discoveryResponse = await client.GetStringAsync(url).ConfigureAwait(false);
-							config = JsonSerializer.Deserialize<OAuthConfiguration>(discoveryResponse);
+							config = JsonSerializer.Deserialize(discoveryResponse, TinyLinks.TinyLinksJsonContext.Default.OAuthConfiguration);
 							break;
 						}
 						catch (Exception e)
@@ -90,7 +90,7 @@ namespace Authentication
 							{
 								client.Timeout = TimeSpan.FromSeconds(5);
 								string jwksResponse = await client.GetStringAsync(config.jwks_uri).ConfigureAwait(false);
-								KeySet? jwksData = JsonSerializer.Deserialize<KeySet>(jwksResponse);
+								KeySet? jwksData = JsonSerializer.Deserialize(jwksResponse, TinyLinks.TinyLinksJsonContext.Default.KeySet);
 								if (jwksData!=null && jwksData.keys!=null)
 								{
 									// Parse the keys

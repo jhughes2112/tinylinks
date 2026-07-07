@@ -1,12 +1,10 @@
 using ReachableGames;
-using CommandLine;
 using DataCollection;
 using Logging;
 using Networking;
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-using System.Runtime.Loader;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Utilities;
@@ -20,7 +18,9 @@ namespace TinyLinks
 	{
 		static public async Task Main(string[] args)
 		{
-			await Parser.Default.ParseArguments<TinyLinksOptions>(args).WithParsedAsync(Run).ConfigureAwait(false);
+			TinyLinksOptions? options = TinyLinksOptions.Parse(args);
+			if (options != null)
+				await Run(options).ConfigureAwait(false);
 		}
 
 		static private async Task Run(TinyLinksOptions o)
@@ -38,18 +38,16 @@ namespace TinyLinks
 				});
 
 			// Set up a callback to have SIGTERM also halt the server gracefully.  This is what "docker stop" uses.
-			AssemblyLoadContext? ctx = AssemblyLoadContext.GetLoadContext(typeof(Program).GetTypeInfo().Assembly);
-			if (ctx!=null)
-			{
-				ctx.Unloading += (AssemblyLoadContext context) =>
+			// PosixSignalRegistration works under NativeAOT, unlike the old AssemblyLoadContext.Unloading trick.
+			using PosixSignalRegistration sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, (PosixSignalContext context) =>
 				{
-					if (sigIntRecvd==false)  // don't process this if control-c happened 
+					context.Cancel = true;  // we shut down gracefully ourselves
+					if (sigIntRecvd==false)  // don't process this if control-c happened
 					{
 						Console.WriteLine("Caught SIGTERM, tripping cancellation token.");  // SIGTERM / kill
 						tokenSrc.Cancel();
 					}
-				};
-			}
+				});
 
 			// Move resource definitions outside try/catch so they can be properly disposed in finally
 			ILogging? logger = null;

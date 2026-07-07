@@ -202,7 +202,7 @@ namespace Authentication
 					string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
 					try
 					{
-						DiscordTokenResponse? tr = JsonSerializer.Deserialize<DiscordTokenResponse>(body);
+						DiscordTokenResponse? tr = JsonSerializer.Deserialize(body, TinyLinks.TinyLinksJsonContext.Default.DiscordTokenResponse);
 						return tr;
 					}
 					catch (Exception e)
@@ -229,7 +229,7 @@ namespace Authentication
 					string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
 					try
 					{
-						DiscordUserResponse? ur = JsonSerializer.Deserialize<DiscordUserResponse>(body);
+						DiscordUserResponse? ur = JsonSerializer.Deserialize(body, TinyLinks.TinyLinksJsonContext.Default.DiscordUserResponse);
 						return ur;
 					}
 					catch (Exception e)
@@ -245,7 +245,7 @@ namespace Authentication
 			return null;
 		}
 
-		private sealed class DiscordTokenResponse
+		internal sealed class DiscordTokenResponse
 		{
 			public string? access_token { get; set; }
 			public string? token_type   { get; set; }
@@ -254,7 +254,7 @@ namespace Authentication
 			public string? scope        { get; set; }
 		}
 
-		private sealed class DiscordUserResponse
+		internal sealed class DiscordUserResponse
 		{
 			public string? id           { get; set; }
 			public string? username     { get; set; }

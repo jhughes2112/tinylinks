@@ -178,8 +178,8 @@ namespace Authentication
 						string decodedHeader = UrlHelper.Base64UrlDecode(header);
 						string decodedPayload = UrlHelper.Base64UrlDecode(payload);
 
-						JwtHeader? jwtheader = JsonSerializer.Deserialize<JwtHeader>(decodedHeader);
-						JwtPayload? jwtpayload = JsonSerializer.Deserialize<JwtPayload>(decodedPayload);
+						JwtHeader? jwtheader = JsonSerializer.Deserialize(decodedHeader, TinyLinks.TinyLinksJsonContext.Default.JwtHeader);
+						JwtPayload? jwtpayload = JsonSerializer.Deserialize(decodedPayload, TinyLinks.TinyLinksJsonContext.Default.UpstreamJwtPayload);
 
 						// Extract the 'kid' from the JWT header
 						if (jwtheader!=null && jwtpayload!=null && jwtheader.kid!=null)
@@ -266,7 +266,7 @@ namespace Authentication
 					string responseBody = await tokenResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
 					try
 					{
-						JwtResponse? jwtResponse = JsonSerializer.Deserialize<JwtResponse>(responseBody);
+						JwtResponse? jwtResponse = JsonSerializer.Deserialize(responseBody, TinyLinks.TinyLinksJsonContext.Default.JwtResponse);
 						if (string.IsNullOrEmpty(jwtResponse?.id_token)==false)
 						{
 							return jwtResponse.id_token;  // the whole response is the JWT, which includes the access_token and id_token
@@ -285,12 +285,12 @@ namespace Authentication
 			return null;
 		}
 
-		protected class JwtHeader
+		internal class JwtHeader
 		{
 			public string? kid { get; set; }   // this indicates what public key was used for signing
 		}
 
-		protected class JwtPayload
+		internal class JwtPayload
 		{
 			public string?   iss           { get; set; }  // this is supposed to always be our fusionauth/authentik server, but authentik doesn't let you configure what it returns so we can't really use it
 			public string?   aud           { get; set; }  // authentik: returns the clientid that authenticated this user.  "thisisaclientid" is what we are using currently
@@ -303,7 +303,7 @@ namespace Authentication
 			public string[]? groups        { get; set; }  // authentik
 		}
 
-		protected class JwtResponse
+		internal class JwtResponse
 		{
 			public string? access_token { get; set; }
 			public int     expires_in   { get; set; }

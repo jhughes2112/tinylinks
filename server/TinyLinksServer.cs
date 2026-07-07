@@ -727,7 +727,7 @@ namespace TinyLinks
 					doc["claims_supported"] = new[] { "iss", "sub", "aud", "exp", "iat", "email", "name", "roles" };
 					doc["code_challenge_methods_supported"] = new[] { "S256" };
 					doc["grant_types_supported"] = new[] { "authorization_code" };
-					string json = JsonSerializer.Serialize(doc);
+					string json = JsonSerializer.Serialize(doc, TinyLinksJsonContext.Default.DictionaryStringObject);
 					statusCode = 200;
 					contentType = "application/json";
 					content = Encoding.UTF8.GetBytes(json);
@@ -782,7 +782,7 @@ namespace TinyLinks
 					body["keys"] = new[] { key };
 					statusCode = 200;
 					contentType = "application/json";
-					content = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body));
+					content = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body, TinyLinksJsonContext.Default.DictionaryStringObject));
 				}
 				else
 				{
@@ -1104,7 +1104,7 @@ namespace TinyLinks
 								resp["expires_in"] = _sessionDurationSeconds;
 								resp["access_token"] = record.Token;
 								resp["id_token"] = record.Token;
-								string json = JsonSerializer.Serialize(resp);
+								string json = JsonSerializer.Serialize(resp, TinyLinksJsonContext.Default.DictionaryStringObject);
 								statusCode = 200;
 								contentType = "application/json";
 								content = Encoding.UTF8.GetBytes(json);

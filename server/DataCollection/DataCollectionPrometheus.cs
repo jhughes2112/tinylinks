@@ -1,6 +1,5 @@
 ﻿using Logging;
 using Prometheus;
-using Prometheus.DotNetRuntime;
 using Shared;
 using System;
 using System.Collections.Generic;
@@ -25,28 +24,18 @@ namespace DataCollection
 
 		private ThreadSafeDictionary<string, Gauge>   _gauges        = new ThreadSafeDictionary<string, Gauge>();
 		private ThreadSafeDictionary<string, Counter> _counters      = new ThreadSafeDictionary<string, Counter>();
-		private IDisposable?                          _collector     = null;
 
 		// Labels automatically tag all gauges and counters that are created so they can be easily queried, such as program->cluster or zone->tidesreach
+		// Runtime stats (GC, threadpool, exceptions, sockets) come from prometheus-net's built-in default collectors
+		// (process metrics + .NET event counters + meters).  prometheus-net.DotNetRuntime was dropped: it relies on
+		// runtime reflection that breaks under NativeAOT, and its JIT stats are meaningless in an AOT binary anyway.
 		public DataCollectionPrometheus(Dictionary<string, string> labels, ILogging logger)
 		{
 			Metrics.DefaultRegistry.SetStaticLabels(labels);
-			_collector = DotNetRuntimeStatsBuilder.Customize()
-				.WithContentionStats()
-				.WithExceptionStats()
-				.WithGcStats()
-				.WithJitStats()
-				.WithThreadPoolStats()
-				.WithErrorHandler(err => logger.Log(EVerbosity.Error, $"Prometheus: {err}"))
-				.WithSocketStats()
-//				.RecycleCollectorsEvery(TimeSpan.FromDays(1))
-				.StartCollecting();
 		}
 
 		public void Dispose()
 		{
-			_collector?.Dispose();  // This stops the collector too.
-			_collector = null;
 		}
 
 		public void CreateGauge(string gaugeName, string description)

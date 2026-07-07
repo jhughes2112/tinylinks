@@ -75,17 +75,17 @@ namespace Utilities
 		// Create a general JWT given arbitrary claims
 		private string CreateToken(Dictionary<string, object?> claims, string issuer)
 		{
-			var header = new Dictionary<string, object>
+			var header = new Dictionary<string, object?>
 			{
 				{"alg", "RS256"},
 				{"typ", "JWT"},
 				{"kid", _kid}
 			};
-			string headerJson = JsonSerializer.Serialize(header);
+			string headerJson = JsonSerializer.Serialize(header, TinyLinks.TinyLinksJsonContext.Default.DictionaryStringObject);
 			string headerB64 = UrlHelper.Base64UrlEncodeNoPadding(Encoding.UTF8.GetBytes(headerJson));
 
 			if (!claims.ContainsKey("iss")) claims["iss"] = issuer;
-			string payloadJson = JsonSerializer.Serialize(claims);
+			string payloadJson = JsonSerializer.Serialize(claims, TinyLinks.TinyLinksJsonContext.Default.DictionaryStringObject);
 			string payloadB64 = UrlHelper.Base64UrlEncodeNoPadding(Encoding.UTF8.GetBytes(payloadJson));
 
 			string signingInput = headerB64 + "." + payloadB64;
@@ -126,7 +126,7 @@ namespace Utilities
 					if (_rsa.VerifyData(data, sig, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
 					{
 						string payloadJson = Encoding.UTF8.GetString(UrlHelper.Base64UrlDecodeBytes(parts[1]));
-						payload = JsonSerializer.Deserialize<JwtPayload>(payloadJson);
+						payload = JsonSerializer.Deserialize(payloadJson, TinyLinks.TinyLinksJsonContext.Default.ServerJwtPayload);
 						return payload != null;
 					}
 				}
