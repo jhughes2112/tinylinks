@@ -48,19 +48,20 @@ namespace Utilities
 					return new AuthenticationAlways("admin123", "Admin User", "admin@mooncast.productions", new string[] { IAuthentication.kAdminRole }, logger);
 				case "openid":
 				{
-					if (parts.Length != 5)
-						throw new Exception("openid auth requires openid,provider,wellknown-url,clientid,clientsecret");
+					if (parts.Length != 6)
+						throw new Exception("openid auth requires openid,provider,wellknown-url,clientid,clientsecret,scopes");
 
 					string provider = parts[1];
 					string openIdUrl = parts[2];
 					string clientId = parts[3];
 					string clientSecret = parts[4];
+					string scopes = parts[5];  // not all oauth2 providers support the same scopes, so we supply them as "openid+profile+email" or whatever you want
 
 					OAuth2Helper helper = new OAuth2Helper(logger);
 					Dictionary<string, RSA>? publicKeys = await helper.GetPublicKeys(openIdUrl).ConfigureAwait(false);
 					(string? authEndpoint, string? tokenEndpoint) = await helper.GetEndpoints(openIdUrl).ConfigureAwait(false);
 					if (publicKeys!=null && tokenEndpoint!=null && authEndpoint!=null)
-						return new AuthenticationOAuth2(provider, authEndpoint, tokenEndpoint, clientId, clientSecret, publicKeys, logger);
+						return new AuthenticationOAuth2(provider, authEndpoint, tokenEndpoint, clientId, clientSecret, scopes, publicKeys, logger);
 					throw new Exception($"No public keys or missing endpoint for openId provider {provider}");
 				}
 				case "discord":

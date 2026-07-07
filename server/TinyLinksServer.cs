@@ -625,6 +625,7 @@ namespace TinyLinks
 								string provCounter = GetProviderSuccessCounterName(provSan);
 								_dataCollection.IncrementCounter(provCounter, 1);
 
+								// Use downstream OIDC params to decide redirect target and code/token behavior
 								// Try to set a cookie with the downstream JWT so we can skip this up until the session timeout
 								try
 								{

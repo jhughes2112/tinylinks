@@ -344,12 +344,22 @@
           img.loading = 'eager';
           return img;
         }
+        function iconSiwe() {
+          const img = document.createElement('img');
+          img.src = 'siwe_block_square.png';
+          img.alt = 'Ethereum Wallet';
+          img.width = 20;
+          img.height = 20;
+          img.decoding = 'async';
+          img.loading = 'eager';
+          return img;
+        }
 
         const renderButtons = (providers) => {
           const container = byId('buttons');
           container.innerHTML = '';
-          const names = { google: 'Google', discord: 'Discord', always: 'Always Admin' };
-          const icons = { google: iconGoogle, discord: iconDiscord, always: iconAlways };
+          const names = { google: 'Google', discord: 'Discord', siwe: 'Ethereum Wallet', always: 'Always Admin' };
+          const icons = { google: iconGoogle, discord: iconDiscord, siwe: iconSiwe, always: iconAlways };
           providers.forEach((p) => {
             const btn = document.createElement('button');
             btn.className = 'btn';

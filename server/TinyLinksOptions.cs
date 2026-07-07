@@ -18,7 +18,7 @@ namespace TinyLinks
 		//-------------------
 		// Connection
 		// This is the URL we actually bind to. /health and /metrics for hosting and prometheus.
-		public string? conn_bindurl { get; set; } = "http://+:7777/";
+		public string? conn_bindurl { get; set; } = "http://+:17777/";
 
 		//-------------------
 		// Storage - primarily for metadata, and it's always stored in .json format to make life simple.
@@ -28,7 +28,11 @@ namespace TinyLinks
 		//-------------------
 		// Authentication
 		// To configure multiple providers, do --auth_config once followed by several definitions with a space between them.
-		// "openid,<provider>,<well-known-openid-config-url>,<clientid>,<clientsecret> openid,..."  (required)
+		// Legal formats:
+		//   openid,<provider>,<well-known-openid-config-url>,<clientid>,<clientsecret>,openid+profile+email
+		//   discord,<clientid>,<clientsecret>
+		//   always
+		// Not all oauth2 providers support the same scopes (SIWE-OIDC has no email), so scopes are part of the config.  (required)
 		public IEnumerable<string>? auth_config { get; set; }
 
 		//-------------------
@@ -161,9 +165,9 @@ namespace TinyLinks
 			}
 			sb.AppendLine("TinyLinks options:");
 			sb.AppendLine("  --log_config        Must be: console,# or file,#,/path/file.log where [0=Errors, 1=Warnings, 2=Info, 3=Debug, 4=Extreme]  (default: console,2)");
-			sb.AppendLine("  --conn_bindurl      This is the URL we actually bind to. /health and /metrics for hosting and prometheus.  (default: http://+:7777/)");
+			sb.AppendLine("  --conn_bindurl      This is the URL we actually bind to. /health and /metrics for hosting and prometheus.  (default: http://+:17777/)");
 			sb.AppendLine("  --storage_config    REQUIRED. Root of dynamic storage, ex: /data/");
-			sb.AppendLine("  --auth_config       REQUIRED. Authentication entries, space separated and/or repeated. Each: always or discord,<clientid>,<clientsecret> or openid,<provider>,<well-known-url>,<clientid>,<clientsecret>");
+			sb.AppendLine("  --auth_config       REQUIRED. Authentication entries, space separated and/or repeated. Each: always or discord,<clientid>,<clientsecret> or openid,<provider>,<well-known-url>,<clientid>,<clientsecret>,<scopes> (scopes like openid+profile+email)");
 			sb.AppendLine("  --session_duration  Duration of a logged in session in seconds, after which user will need to login again.  (default: 3600)");
 			sb.AppendLine("  --linkcreate_secret REQUIRED. Your application provides this secret to generate masquerade links, which prevents JWT theft resulting in account theft.");
 			sb.AppendLine("  --client_config     REQUIRED. Allowed downstream OIDC clients, space separated and/or repeated. Each: clientid,redirecturi[,redirecturi...]");
