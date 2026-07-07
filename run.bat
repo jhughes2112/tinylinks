@@ -16,6 +16,6 @@ docker run -it --rm  --name tinylinks -p 17777:17777 ^
   --session_duration 3600 ^
   --linkcreate_secret somelinksecrethere ^
   --auth_config always ^
-  --client_config testclient,http://localhost:17777/callback
+  --client_config testclient,http://localhost:17777/
 
 docker volume rm tinylinks-data

@@ -803,6 +803,53 @@ namespace TinyLinks
 		}
 
 		//-------------------
+		// Tells the login page which auth providers are configured so it only renders working buttons.
+		public Task<(int, string, byte[])> Providers(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+			{
+				return Task.FromResult<(int, string, byte[])>((204, "text/plain", Array.Empty<byte>()));
+			}
+
+			int statusCode = 200;
+			string contentType = "text/plain";
+			byte[] content = Array.Empty<byte>();
+
+			// Figure out where the request was sent to by the client
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+
+			Uri? baseUri = GetAdvertiseBaseForRequest(originalRequestUri);
+			if (baseUri != null)
+			{
+				if (string.Equals(http.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
+				{
+					string[] providers = new string[_authProviders.Count];
+					for (int i = 0; i < _authProviders.Count; i++)
+						providers[i] = _authProviders[i].Provider;
+					statusCode = 200;
+					contentType = "application/json";
+					content = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(providers, TinyLinksJsonContext.Default.StringArray));
+				}
+				else
+				{
+					statusCode = 405;
+					contentType = "text/plain";
+					content = Encoding.UTF8.GetBytes("Method Not Allowed");
+				}
+			}
+			else
+			{
+				_logger.Log(EVerbosity.Warning, $"Providers unexpected source: {originalRequestUri.AbsoluteUri}");
+				statusCode = 401;
+				contentType = "text/plain";
+				content = Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}");
+			}
+
+			return Task.FromResult((statusCode, contentType, content));
+		}
+
+		//-------------------
 		// Static_root file server with auto-redirect on valid session at base
 		public async Task<(int, string, byte[])> GetClient(HttpListenerContext http)
 		{

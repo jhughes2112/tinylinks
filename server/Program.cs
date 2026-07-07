@@ -88,6 +88,7 @@ namespace TinyLinks
 				// Explicit API handlers
 				webServer.RegisterExactEndpoint("/.well-known/openid-configuration", server.OpenIdConfiguration);
 				webServer.RegisterExactEndpoint("/.well-known/jwks.json", server.Jwks);
+				webServer.RegisterExactEndpoint("/api/oauth/providers", server.Providers); // Which providers are configured (drives the login page buttons)
 				webServer.RegisterExactEndpoint("/api/oauth/url", server.OAuthUrl);        // Downstream authorize endpoint
 				webServer.RegisterExactEndpoint("/api/oauth/upstream", server.OAuthUpstream); // Start upstream provider flow
 				webServer.RegisterExactEndpoint("/api/oauth/callback", server.OAuthCallback);
@@ -115,6 +116,7 @@ namespace TinyLinks
 				webServer?.UnregisterPrefixEndpoint("/");
 				webServer?.UnregisterExactEndpoint("/.well-known/openid-configuration");
 				webServer?.UnregisterExactEndpoint("/.well-known/jwks.json");
+				webServer?.UnregisterExactEndpoint("/api/oauth/providers");
 				webServer?.UnregisterExactEndpoint("/api/oauth/url");
 				webServer?.UnregisterExactEndpoint("/api/oauth/upstream");
 				webServer?.UnregisterExactEndpoint("/api/oauth/callback");
