@@ -804,7 +804,9 @@ namespace TinyLinks
 		}
 
 		//-------------------
-		// Tells the login page which auth providers are configured so it only renders working buttons.
+		// Tells the login page which auth providers are configured so it only renders working buttons,
+		// plus which registered client (if any) has this site's base URL as a redirect - that client is
+		// what the page's built-in demo flow acts as, so nothing is hardcoded in the html.
 		public Task<(int, string, byte[])> Providers(HttpListenerContext http)
 		{
 			AddCors(http.Request, http.Response, "GET, OPTIONS");
@@ -828,9 +830,12 @@ namespace TinyLinks
 					string[] providers = new string[_authProviders.Count];
 					for (int i = 0; i < _authProviders.Count; i++)
 						providers[i] = _authProviders[i].Provider;
+					Dictionary<string, object?> doc = new Dictionary<string, object?>();
+					doc["providers"] = providers;
+					doc["demo_client_id"] = _clientRegistry.FindClientForRedirect(baseUri.AbsoluteUri);
 					statusCode = 200;
 					contentType = "application/json";
-					content = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(providers, TinyLinksJsonContext.Default.StringArray));
+					content = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(doc, TinyLinksJsonContext.Default.DictionaryStringObject));
 				}
 				else
 				{

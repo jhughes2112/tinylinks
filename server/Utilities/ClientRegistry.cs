@@ -48,5 +48,17 @@ namespace Utilities
 				return false;
 			return _clientToRedirects.TryGetValue(clientId!, out HashSet<string>? redirects) && redirects.Contains(redirectUri!);
 		}
+
+		// Returns a client id whose allowlist includes the given redirect URI, or null if none does.
+		// Used to pick the client the built-in demo login page should act as (its redirect is the site base URL).
+		public string? FindClientForRedirect(string redirectUri)
+		{
+			foreach (KeyValuePair<string, HashSet<string>> kv in _clientToRedirects)
+			{
+				if (kv.Value.Contains(redirectUri))
+					return kv.Key;
+			}
+			return null;
+		}
 	}
 }

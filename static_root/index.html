@@ -224,15 +224,17 @@
 
         // When this page is opened directly (not via a client app redirecting through /api/oauth/url),
         // there are no downstream authorize params, so the Always Admin button acts as a self-contained
-        // demo OIDC client: generate a PKCE pair and use the demo client registered in run.bat's
-        // --client_config. This same page is the redirect target and finishes the exchange (see below).
+        // demo OIDC client: generate a PKCE pair and act as whichever registered client the server says
+        // has this site's base URL as a redirect (demo_client_id from /api/oauth/providers) - nothing is
+        // hardcoded here. This same page is the redirect target and finishes the exchange (see below).
         // The demo is deliberately limited to the 'always' provider - real providers should only be
         // entered through an actual client application's authorize request.
+        let demoClientId = null;
         async function demoAuthorizeParams() {
           const verifier = randomB64url(32);
           const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
           const state = randomB64url(16);
-          const clientId = 'testclient';
+          const clientId = demoClientId;
           const redirectUri = window.location.origin + '/';
           sessionStorage.setItem('tl_demo', JSON.stringify({ verifier, state, clientId, redirectUri }));
           return new URLSearchParams({
@@ -255,8 +257,11 @@
             const search = window.location.search;
             if (search && search.length > 1 && new URLSearchParams(search).has('client_id')) {
               urlStr += `&${search.slice(1)}`;
-            } else if (provider === 'always') {
+            } else if (provider === 'always' && demoClientId) {
               urlStr += `&${await demoAuthorizeParams()}`;
+            } else if (provider === 'always') {
+              setError('No client is registered with this page as its redirect URI, so the demo cannot run. Add "<clientid>,' + window.location.origin + '/" to --client_config.');
+              return;
             } else {
               setError('Sign in here requires entering through your application\'s login flow. Use Always Admin to try the demo.');
               return;
@@ -390,9 +395,10 @@
         } else {
           fetch('/api/oauth/providers')
             .then((r) => { if (!r.ok) throw new Error('Provider list returned ' + r.status); return r.json(); })
-            .then((providers) => {
-              if (Array.isArray(providers) && providers.length > 0) {
-                renderButtons(providers);
+            .then((data) => {
+              demoClientId = data.demo_client_id || null;
+              if (Array.isArray(data.providers) && data.providers.length > 0) {
+                renderButtons(data.providers);
               } else {
                 setError('No authentication providers are configured on this server.');
               }
