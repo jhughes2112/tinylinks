@@ -137,7 +137,7 @@ namespace Authentication
 		{
 			// We already verified this is the correct state and it's ours.
 			string state = httpContext.Request.QueryString["state"]!;
-			if (_oauthStates.TryRemove(state, out OAuthStateEntry entry))
+			if (_oauthStates.TryRemove(state, out OAuthStateEntry? entry))
 			{
 				// wipe out that cookie
 				try

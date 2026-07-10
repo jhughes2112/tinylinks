@@ -586,7 +586,7 @@ namespace TinyLinks
 								// If there is a link code, see if it's valid, and if so, write a masquerade file for this login so this login will appear to be the other account.
 								if (!string.IsNullOrWhiteSpace(linkcode))
 								{
-									if (_codes.TryRemove(linkcode, out CodeRecord rec) && DateTime.UtcNow <= rec.Expires)
+									if (_codes.TryRemove(linkcode, out CodeRecord? rec) && DateTime.UtcNow <= rec.Expires)
 									{
 										await SaveOverrideSub(downstreamSub, rec.Sub).ConfigureAwait(false);
 										_logger.Log(EVerbosity.Info, $"Linked override set {downstreamSub} -> {rec.Sub}");
@@ -1124,7 +1124,7 @@ namespace TinyLinks
 
 					if (string.Equals(grantType, "authorization_code", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(code))
 					{
-						if (_authCodes.TryRemove(code, out AuthCodeRecord record) && DateTime.UtcNow <= record.Expires)
+						if (_authCodes.TryRemove(code, out AuthCodeRecord? record) && DateTime.UtcNow <= record.Expires)
 						{
 							// Bind the exchange unconditionally to the code's client_id and redirect_uri. Skipping these when
 							// the caller simply omits the field would let a stolen code be redeemed by anyone.

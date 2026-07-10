@@ -1,3 +1,4 @@
+#nullable enable
 #nullable disable warnings
 //-------------------
 // Reachable Games

@@ -139,7 +139,7 @@ namespace Authentication
 				return (null, null, null, null, null, null);
 			}
 
-			if (_states.TryRemove(state, out OAuthStateEntry entry) == false)
+			if (_states.TryRemove(state, out OAuthStateEntry? entry) == false)
 			{
 				return (null, null, null, null, null, null);
 			}

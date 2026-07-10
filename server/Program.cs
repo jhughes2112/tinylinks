@@ -55,7 +55,7 @@ namespace TinyLinks
 			List<IAuthentication>? authentications = null;
 			StorageFiles? linksStorage = null;
 			TinyLinksServer? server = null;
-			ReachableGames.RGWebSocket.WebServer? webServer = null;
+			ReachableGames.RGWebSocket.RGWebServer? webServer = null;
 			
 			try
 			{
@@ -79,7 +79,7 @@ namespace TinyLinks
 
 				// Set up a websocket handler that forwards connections, disconnections, and messages to the ClusterServer
 				ConnectionManagerReject connectionMgr = new ConnectionManagerReject(logger);
-				webServer = new ReachableGames.RGWebSocket.WebServer(o.conn_bindurl!, 20, 1000, 5, connectionMgr, logger);
+				webServer = new ReachableGames.RGWebSocket.RGWebServer(o.conn_bindurl!, 20, 1000, 5, connectionMgr, logger, dataCollection);
 
 				// (responseCode, responseContentType, responseContent)
 				webServer.RegisterExactEndpoint("/metrics", async (HttpListenerContext context) => { return (200, "text/plain", await dataCollection.Generate()); });
@@ -101,7 +101,7 @@ namespace TinyLinks
 
 				webServer.Start();  // this starts the webserver in a separate thread
 
-				await tokenSrc.Token;  // block here until the cancellation token triggers.  Note, if the server decides to shut itself down, IT CANCELS THIS TOKEN.  So this is the perfect way to wait.
+				await Task.Delay(Timeout.Infinite, tokenSrc.Token);  // block here until the cancellation token triggers.  Note, if the server decides to shut itself down, IT CANCELS THIS TOKEN.  So this is the perfect way to wait.
 			}
 			catch (OperationCanceledException)
 			{

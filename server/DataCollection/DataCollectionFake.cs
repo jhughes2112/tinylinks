@@ -25,6 +25,7 @@ namespace DataCollection
 
 		private ThreadSafeDictionary<string, ValueDesc> _gauges        = new ThreadSafeDictionary<string, ValueDesc>();
 		private ThreadSafeDictionary<string, ValueDesc> _counters      = new ThreadSafeDictionary<string, ValueDesc>();
+		private ThreadSafeDictionary<string, ValueDesc> _histograms    = new ThreadSafeDictionary<string, ValueDesc>();  // fake: just tracks observation count
 		private Dictionary<string, string>              _labels;  // labels are added statically to all prometheus counters and gauges
 		private ILogging                                _logger;
 
@@ -55,7 +56,7 @@ namespace DataCollection
 
 		public void IncrementCounter(string counterName, double v)
 		{
-			if (_counters.TryGetValue(counterName, out ValueDesc vd)==false)
+			if (_counters.TryGetValue(counterName, out ValueDesc? vd)==false)
 				throw new Exception($"DataCollection.IncrementCounter missing {counterName}");
 
 			Interlocked.Add(ref vd.value, (int)v);
@@ -63,10 +64,25 @@ namespace DataCollection
 
 		public void SetGauge(string gaugeName, double v)
 		{
-			if (_gauges.TryGetValue(gaugeName, out ValueDesc vd)==false)
+			if (_gauges.TryGetValue(gaugeName, out ValueDesc? vd)==false)
 				throw new Exception($"DataCollection.SetGauge missing {gaugeName}");
 
 			vd.value = (long)v;  // if this fails, we just allow it to fail.  Gauges are just set, not additive.
+		}
+
+		public void CreateHistogram(string histogramName, string description, double[] bucketUpperBounds)
+		{
+			if (RegexHelper.PrometheusName.IsMatch(histogramName)==false)
+				throw new Exception($"DataCollection.CreateHistogram Invalid name format (only letters, numbers, and underscores): {histogramName}");
+			_histograms.GetOrAdd(histogramName, () => new ValueDesc(0, description));
+		}
+
+		public void ObserveHistogram(string histogramName, double value)
+		{
+			if (_histograms.TryGetValue(histogramName, out ValueDesc? vd)==false)
+				throw new Exception($"DataCollection.ObserveHistogram missing {histogramName}");
+
+			Interlocked.Increment(ref vd.value);  // the fake doesn't keep a distribution, just how many observations landed
 		}
 
 		public Task<byte[]> Generate()
@@ -82,6 +98,10 @@ namespace DataCollection
 					_counters.Foreach((string counterName, ValueDesc vd) =>
 						{
 							sw.WriteLine($"{counterName} = {vd.value}  -> {vd.description}");
+						});
+					_histograms.Foreach((string histogramName, ValueDesc vd) =>
+						{
+							sw.WriteLine($"{histogramName} = {vd.value} observations  -> {vd.description}");
 						});
 				}
 				return Task.FromResult(ms.ToArray());

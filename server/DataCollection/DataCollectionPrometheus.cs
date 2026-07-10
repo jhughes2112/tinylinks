@@ -22,8 +22,9 @@ namespace DataCollection
 			public string description;
 		}
 
-		private ThreadSafeDictionary<string, Gauge>   _gauges        = new ThreadSafeDictionary<string, Gauge>();
-		private ThreadSafeDictionary<string, Counter> _counters      = new ThreadSafeDictionary<string, Counter>();
+		private ThreadSafeDictionary<string, Gauge>     _gauges     = new ThreadSafeDictionary<string, Gauge>();
+		private ThreadSafeDictionary<string, Counter>   _counters   = new ThreadSafeDictionary<string, Counter>();
+		private ThreadSafeDictionary<string, Histogram> _histograms = new ThreadSafeDictionary<string, Histogram>();
 
 		// Labels automatically tag all gauges and counters that are created so they can be easily queried, such as program->cluster or zone->tidesreach
 		// Runtime stats (GC, threadpool, exceptions, sockets) come from prometheus-net's built-in default collectors
@@ -55,16 +56,30 @@ namespace DataCollection
 
 		public void IncrementCounter(string counterName, double v)
 		{
-			if (_counters.TryGetValue(counterName, out Counter c)==false)
+			if (_counters.TryGetValue(counterName, out Counter? c)==false)
 				throw new Exception($"DataCollection.IncrementCounter missing {counterName}");
 			c.Inc(v);
 		}
 
 		public void SetGauge(string gaugeName, double value)
 		{
-			if (_gauges.TryGetValue(gaugeName, out Gauge g)==false)
+			if (_gauges.TryGetValue(gaugeName, out Gauge? g)==false)
 				throw new Exception($"DataCollection.SetGauge missing {gaugeName}");
 			g.Set(value);
+		}
+
+		public void CreateHistogram(string histogramName, string description, double[] bucketUpperBounds)
+		{
+			if (RegexHelper.PrometheusName.IsMatch(histogramName)==false)
+				throw new Exception($"DataCollection.CreateHistogram Invalid name format (only letters, numbers, and underscores): {histogramName}");
+			_histograms.GetOrAdd(histogramName, () => Metrics.CreateHistogram(histogramName, description, new HistogramConfiguration() { Buckets = bucketUpperBounds }));
+		}
+
+		public void ObserveHistogram(string histogramName, double value)
+		{
+			if (_histograms.TryGetValue(histogramName, out Histogram? h)==false)
+				throw new Exception($"DataCollection.ObserveHistogram missing {histogramName}");
+			h.Observe(value);
 		}
 
 		public async Task<byte[]> Generate()
