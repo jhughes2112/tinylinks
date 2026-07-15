@@ -30,7 +30,7 @@ namespace Networking
 			return Task.CompletedTask;  // never called in raw mode
 		}
 
-		protected internal override Task OnRawMessage(RGWebSocket rgws, PooledArray msg, bool isText)
+		protected override Task OnRawMessage(RGWebSocket rgws, PooledArray msg, bool isText)
 		{
 			return Task.CompletedTask;  // ignore anything that sneaks in before the close completes
 		}

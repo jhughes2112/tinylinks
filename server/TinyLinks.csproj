@@ -10,12 +10,26 @@
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Size</OptimizationPreference>
     <IsAotCompatible>true</IsAotCompatible>
+
+    <!-- Don't emit a managed .pdb for TinyLinks, and don't copy the
+         referenced RGWebSocket.pdb into the build output. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MimeTypesMap" Version="1.0.9" />
     <PackageReference Include="Nito.AsyncEx" Version="5.1.2" />
     <PackageReference Include="prometheus-net" Version="8.2.1" />
+  </ItemGroup>
+
+  <!-- Prebuilt AOT-compatible RGWebSocket assembly (was previously compiled
+       from source under server/RGWebSocket.Core and .Server). -->
+  <ItemGroup>
+    <Reference Include="RGWebSocket">
+      <HintPath>RGWebSocket\RGWebSocket.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

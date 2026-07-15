@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "RGWebSocket/2.0.0": {
+        "runtime": {
+          "RGWebSocket.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "RGWebSocket/2.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}
