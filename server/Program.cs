@@ -81,23 +81,31 @@ namespace TinyLinks
 				ConnectionManagerReject connectionMgr = new ConnectionManagerReject(logger);
 				webServer = new ReachableGames.RGWebSocket.RGWebServer(o.conn_bindurl!, 20, 1000, 5, connectionMgr, logger, dataCollection);
 
+				// Every registration states its policies explicitly: cacheSeconds (0 = never cached, N = successful GETs
+				// served from the in-memory response cache for N seconds -- a rate limiter on expensive public endpoints),
+				// and an authorizer (null = public; non-null runs up-front on EVERY request, including cache hits).
+				// NOTE: the cache key is path+query only, so anything whose RESPONSE varies by caller or by request Host
+				// (all the OIDC endpoints build URLs from the advertise base that matched) must stay at cacheSeconds:0.
+
 				// (responseCode, responseContentType, responseContent)
-				webServer.RegisterExactEndpoint("/metrics", async (HttpListenerContext context) => { return (200, "text/plain", await dataCollection.Generate()); });
-				webServer.RegisterExactEndpoint("/health", (HttpListenerContext) => { return Task.FromResult((200, "text/plain", new byte[0])); } );
+				webServer.RegisterExactEndpoint("/metrics", async (HttpListenerContext context) => { return (200, "text/plain", await dataCollection.Generate()); }, 1, null); // brief cache blunts scrape floods without affecting a normal 15s+ prometheus interval
+				webServer.RegisterExactEndpoint("/health", (HttpListenerContext) => { return Task.FromResult((200, "text/plain", new byte[0])); }, 1, null); // liveness must never be answered from cache
 
-				// Explicit API handlers
-				webServer.RegisterExactEndpoint("/.well-known/openid-configuration", server.OpenIdConfiguration);
-				webServer.RegisterExactEndpoint("/.well-known/jwks.json", server.Jwks);
-				webServer.RegisterExactEndpoint("/api/oauth/providers", server.Providers); // Which providers are configured (drives the login page buttons)
-				webServer.RegisterExactEndpoint("/api/oauth/url", server.OAuthUrl);        // Downstream authorize endpoint
-				webServer.RegisterExactEndpoint("/api/oauth/upstream", server.OAuthUpstream); // Start upstream provider flow
-				webServer.RegisterExactEndpoint("/api/oauth/callback", server.OAuthCallback);
-				webServer.RegisterExactEndpoint("/api/oidc/token", server.Token);           // OIDC token endpoint
-				webServer.RegisterExactEndpoint("/api/link/create", server.LinkCreate);    // game must call this with ?secret=<gamesecret>&userjwt=<jwt> to create a link to allow another account to masquerade as this one
-				webServer.RegisterExactEndpoint("/api/link/unlink", server.UnlinkAccount); // user can call this with ?userjwt=<jwt> to disable masquerading as another account
+				// Explicit API handlers.  All uncached: responses depend on the request Host and/or the caller
+				// (cookies, secrets, one-time codes), so their internal auth checks run on every request.
+				webServer.RegisterExactEndpoint("/.well-known/openid-configuration", server.OpenIdConfiguration, 0, null);
+				webServer.RegisterExactEndpoint("/.well-known/jwks.json", server.Jwks, 0, null);
+				webServer.RegisterExactEndpoint("/api/oauth/providers", server.Providers, 0, null); // Which providers are configured (drives the login page buttons)
+				webServer.RegisterExactEndpoint("/api/oauth/url", server.OAuthUrl, 0, null);        // Downstream authorize endpoint
+				webServer.RegisterExactEndpoint("/api/oauth/upstream", server.OAuthUpstream, 0, null); // Start upstream provider flow
+				webServer.RegisterExactEndpoint("/api/oauth/callback", server.OAuthCallback, 0, null);
+				webServer.RegisterExactEndpoint("/api/oidc/token", server.Token, 0, null);           // OIDC token endpoint
+				webServer.RegisterExactEndpoint("/api/link/create", server.LinkCreate, 0, server.AuthorizeLinkSecret);    // game must call this with ?secret=<gamesecret>&userjwt=<jwt> to create a link to allow another account to masquerade as this one
+				webServer.RegisterExactEndpoint("/api/link/unlink", server.UnlinkAccount, 0, server.AuthorizeSession); // user can call this with ?userjwt=<jwt> to disable masquerading as another account
 
-				// Static content last
-				webServer.RegisterPrefixEndpoint("/", server.GetClient);
+				// Static content last.  Cached to keep a herd of identical requests from hammering the disk; the
+				// known-host gate lives in the authorizer so it still runs on cache hits (the handler's own check doesn't).
+				webServer.RegisterPrefixEndpoint("/", server.GetClient, 10, server.AuthorizeKnownHost);
 
 				webServer.Start();  // this starts the webserver in a separate thread
 

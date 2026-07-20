@@ -941,6 +941,65 @@ namespace TinyLinks
 			return (statusCode, contentType, content);
 		}
 
+		//-------------------
+		// Up-front authorizers, run by RGWebServer on EVERY request BEFORE the response cache is consulted and
+		// before the handler runs -- this is what keeps cached endpoints gated, since a handler that checks auth
+		// internally never runs on a cache hit.  Return null to admit, or a ready-to-send denial (never cached).
+		// OPTIONS preflights are always admitted so the handler can answer CORS preflight; the handlers' own
+		// checks remain in place as defense in depth for the non-cached paths.
+
+		// Gate: the request must arrive on one of our advertised URLs.  This makes caching static files safe --
+		// the handler's internal host check never runs on a cache hit, so the gate has to live here.  Also emits
+		// CORS headers so cache hits (which skip the handler's AddCors) still carry them.
+		public Task<(int, string, byte[])?> AuthorizeKnownHost(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			Uri originalRequestUri = UrlHelper.GetPublicUrl(http.Request);
+			if (GetAdvertiseBaseForRequest(originalRequestUri) != null)
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			_logger.Log(EVerbosity.Warning, $"AuthorizeKnownHost unexpected source: {originalRequestUri.AbsoluteUri}");
+			return Task.FromResult<(int, string, byte[])?>((401, "text/plain", Encoding.UTF8.GetBytes($"Request from unexpected source does not match any AdvertiseURL: {originalRequestUri.AbsoluteUri}")));
+		}
+
+		// Gate: the caller must present the correct link-create secret (constant-time compare).  Rejects bad
+		// callers before the handler spends any work; used by /api/link/create.
+		public Task<(int, string, byte[])?> AuthorizeLinkSecret(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "GET, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			string? providedSecret = http.Request.QueryString["secret"];
+			bool secretOk = !string.IsNullOrWhiteSpace(providedSecret)
+				&& CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(providedSecret), Encoding.UTF8.GetBytes(_linkcreateSecret));
+			if (secretOk)
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			_logger.Log(EVerbosity.Warning, "AuthorizeLinkSecret Unauthorized (missing or invalid secret)");
+			return Task.FromResult<(int, string, byte[])?>((401, "text/plain", Encoding.UTF8.GetBytes("Unauthorized")));
+		}
+
+		// Gate: the caller must have a valid downstream session cookie; used by /api/link/unlink.
+		public Task<(int, string, byte[])?> AuthorizeSession(HttpListenerContext http)
+		{
+			AddCors(http.Request, http.Response, "POST, OPTIONS");
+			if (string.Equals(http.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			string? cookieHeader = http.Request.Headers["Cookie"];
+			string? jwt = UrlHelper.ExtractCookie(cookieHeader, kDownstreamSessionCookieName);
+			Utilities.JwtPayload? payload;
+			if (!string.IsNullOrWhiteSpace(jwt) && TryReadValidSession(jwt, out payload) && payload != null && !string.IsNullOrWhiteSpace(payload.sub))
+				return Task.FromResult<(int, string, byte[])?>(null);
+
+			_logger.Log(EVerbosity.Warning, "AuthorizeSession Unauthorized (no or invalid session)");
+			return Task.FromResult<(int, string, byte[])?>((401, "text/plain", Encoding.UTF8.GetBytes("Unauthorized")));
+		}
+
 		// ---------------- Short link endpoints ----------------
 		public Task<(int, string, byte[])> LinkCreate(HttpListenerContext http)
 		{
