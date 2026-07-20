@@ -1210,11 +1210,15 @@ namespace TinyLinks
 
 							if (ok)
 							{
-								// Build minimal token response
+								// Build minimal token response. The id_token is the signed JWT the client authenticates from;
+								// the access_token is a DISTINCT opaque bearer value. We never expose the signed id_token as an
+								// access_token -- that would let it be replayed as a bearer credential against anything that
+								// accepts a JWT. (We run no resource/userinfo API, so the access_token carries no claims; it
+								// exists only to satisfy the OAuth2 token-response schema.)
 								Dictionary<string, object?> resp = new Dictionary<string, object?>();
 								resp["token_type"] = "Bearer";
 								resp["expires_in"] = _sessionDurationSeconds;
-								resp["access_token"] = record.Token;
+								resp["access_token"] = UrlHelper.GenerateRandomDataBase64url(32);
 								resp["id_token"] = record.Token;
 								string json = JsonSerializer.Serialize(resp, TinyLinksJsonContext.Default.DictionaryStringObject);
 								statusCode = 200;

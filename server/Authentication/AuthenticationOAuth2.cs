@@ -438,7 +438,7 @@ namespace Authentication
 						JwtResponse? jwtResponse = JsonSerializer.Deserialize(responseBody, TinyLinks.TinyLinksJsonContext.Default.JwtResponse);
 						if (string.IsNullOrEmpty(jwtResponse?.id_token)==false)
 						{
-							return jwtResponse.id_token;  // the whole response is the JWT, which includes the access_token and id_token
+							return jwtResponse.id_token;  // the id_token is the signed JWT we authenticate from; access_token is a separate opaque bearer value we don't use
 						}
 					}
 					catch (Exception e)

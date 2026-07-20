@@ -93,7 +93,7 @@ TinyLinks exposes the following endpoints:
   * `/api/oauth/url` — Downstream authorize endpoint. Call this with the standard OAuth2 params (`client_id`, `redirect_uri`, `response_type=code`, `state`, `code_challenge`, `code_challenge_method=S256`, optional `nonce`). Will not work if you skip this step. **PKCE is mandatory** and only `response_type=code` is supported. The `client_id`/`redirect_uri` pair must be registered via `--client_config` or the request is rejected with `400`.
   * `/api/oauth/upstream` — Buttons on the HTML page use this to start upstream provider flow (`?provider=google`). Enforces the same client/redirect/PKCE validation.
   * `/api/oauth/callback` — Provider callback.
-  * `/api/oidc/token` — Token exchange endpoint. Requires PKCE `code_verifier` and the same `client_id`/`redirect_uri` used at authorize time; returns an RS256 JWT (with `aud`/`nonce` claims) as both `access_token` and `id_token`.
+  * `/api/oidc/token` — Token exchange endpoint. Requires PKCE `code_verifier` and the same `client_id`/`redirect_uri` used at authorize time; returns the identity as an RS256 JWT (with `aud`/`nonce` claims) in `id_token`, plus a distinct opaque `access_token`.
 
 * **Masquerading**
 
